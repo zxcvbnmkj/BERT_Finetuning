@@ -1,0 +1,9 @@
+__pycache__/
+.ipynb_checkpoints/
+.idea/
+.DS_Store
+
+*.log
+data/*
+chinese-bert-wwm/*
+json_files/*
