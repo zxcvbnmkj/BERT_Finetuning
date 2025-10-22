@@ -1,5 +1,5 @@
+import glob
 from os import path as osp
-
 import numpy as np
 import pandas as pd
 import torch
@@ -7,7 +7,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from torch import nn
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 from transformers import BertTokenizer
-from main import calculate_metrics
+from main import concatenate_and_trim
 from transformers import BertForSequenceClassification
 
 dir_name = osp.dirname(__file__)
@@ -38,10 +38,24 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title=None):
 
 if __name__ == '__main__':
     batch_size = 64
-    df = pd.read_csv(f'{dir_name}/data/test_set.csv')
-    sentences = df['text'].tolist()
+    test_files = glob.glob(osp.join(f"{dir_name}/data", "testset.*"))
+    if test_files:
+        # 取第一个匹配的文件
+        test_file = test_files[0]
+        file_ext = osp.splitext(test_file)[1].lower()
+        if file_ext == '.csv':
+            df = pd.read_csv(test_file)
+        elif file_ext == '.json':
+            df = pd.read_json(test_file)
+        else:
+            df = None
+            raise ValueError(f"不支持的文件格式: {file_ext}，仅支持 .json 或 .csv")
+    else:
+        raise FileNotFoundError(f"data 文件夹下没有 testset 文件")
+    # sentences = df['text'].tolist()
+    sentences = df.apply(concatenate_and_trim, axis=1).tolist()
     labels = df['label'].tolist()
-    tokenizer = BertTokenizer.from_pretrained('chinese-bert-wwm')
+    tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/bert_classifier')
     test_data = tokenizer(
         sentences,
         padding=True,

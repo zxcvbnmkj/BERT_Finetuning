@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import argparse
 import glob
 import json
@@ -17,7 +18,8 @@ import pandas as pd
 from os import path as osp
 
 if torch.backends.mps.is_available():
-    # MAC系统
+    # 用于 MAC系统
+    # mps: Metal Performance Shaders，Apple Silicon（M1/M2/M3 等）的 GPU 加速框架
     device = torch.device("mps")
 elif torch.cuda.is_available():
     device = torch.device("cuda")
@@ -35,9 +37,20 @@ def set_logger():
         encoding='utf-8'
     )
 
+
+def sentence_process(args, df):
+    if args.task == 0:
+        sentences = df['text'].tolist()
+    elif args.task == 1:
+        sentences = df.apply(concatenate_and_trim, axis=1).tolist()
+    else:
+        raise ValueError(f"不支持的任务类型: {args.task}，支持 0 或 1")
+    return sentences
+
+
 # 把 json 形式数据转换为 df
 def data_transform():
-    print("数据形式转换中...")
+    print("由 json 转换为 csv，数据形式转换中...")
     data_list = []
     json_files = glob.glob(osp.join(f"{dir_name}/json_files", "*.json"))
     for file_path in json_files:
@@ -67,8 +80,8 @@ def data_transform():
     test_set = pd.concat([test_set_0, test_set_1])
     train_set = df.drop(test_set.index)
     os.makedirs(f'{dir_name}/data')
-    test_set.to_csv(f'{dir_name}/data/test_set.csv', index=False, encoding='utf-8')
-    train_set.to_csv(f'{dir_name}/data/train_set.csv', index=False, encoding='utf-8', escapechar='\\')
+    test_set.to_csv(f'{dir_name}/data/testset.csv', index=False, encoding='utf-8')
+    train_set.to_csv(f'{dir_name}/data/trainset.csv', index=False, encoding='utf-8', escapechar='\\')
     return train_set
 
 
@@ -112,8 +125,8 @@ def finetuning(epochs, max_patient):
             total_train_r += r
             total_train_f1 += f1
             total_train_loss += loss.item()
-            print(f"本批次{acc},{p},{r},{f1}")
-            logging.info(f"本批次{acc},{p},{r},{f1}")
+            print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+            logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_train_loss = total_train_loss / len(train_dataloader)
         avg_train_acc = total_train_acc / len(val_dataloader)
         avg_train_p = total_train_p / len(val_dataloader)
@@ -139,8 +152,8 @@ def finetuning(epochs, max_patient):
             total_eval_p += p
             total_eval_r += r
             total_eval_f1 += f1
-            print(f"本批次{acc},{p},{r},{f1}")
-            logging.info(f"本批次{acc},{p},{r},{f1}")
+            print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+            logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_val_accuracy = total_eval_acc / len(val_dataloader)
         avg_val_p = total_eval_p / len(val_dataloader)
         avg_val_r = total_eval_r / len(val_dataloader)
@@ -150,14 +163,27 @@ def finetuning(epochs, max_patient):
         if avg_val_f1 > best_f1:
             best_f1 = avg_val_f1
             patient = 0
+            # 强制确保模型参数的内存布局是连续，用于防止错误 "你在保持一个非连续的张量"
+            # ValueError: You are trying to save a non contiguous tensor: `bert.encoder.layer.0.attention.self.query.weight` which is not allowed. It either means you are trying to save tensors which are reference of each other in which case it's recommended to save only the full tensors, and reslice at load time, or simply call `.contiguous()` on your tensor to pack it before saving.
             for name, param in model.named_parameters():
                 if param is not None:
                     param.data = param.data.contiguous()
-            model.module.save_pretrained(f'{dir_name}/clean_bert_classifier')
+            # 如果使用了分布式训练
+            if hasattr(model, 'module'):
+                model.module.save_pretrained(f'{dir_name}/bert_classifier')
+            else:
+                model.save_pretrained(f'{dir_name}/bert_classifier')
+            # 保存分词器，并放到模型文件夹内。这样在推理的时候就完全不需要用到预训练模型了，只需要一个微调后模型即可
+            tokenizer.save_pretrained(f'{dir_name}/bert_classifier')
         else:
             patient += 1
         if patient == max_patient:
             break
+
+
+def concatenate_and_trim(row):
+    combined_text = row['answer'] + '[SEP]' + row['question']
+    return combined_text[-512:]
 
 
 if __name__ == '__main__':
@@ -167,12 +193,33 @@ if __name__ == '__main__':
     parser.add_argument('--max_patient', type=int, default=2, help='最大容忍次数')
     parser.add_argument('--if_sub', action='store_true', help='是否使用子数据集训练与验证')
     parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
+    parser.add_argument('--mode', type=int, default=1, help='0: 给出的是`正样本.json`和`负样本.json`二者没有混合，此时需要把它们混合之后再分隔为训练集和测试集；'
+                                                            '1: 给出的是训练集、测试集（验证集可选）')
+    parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
+                                                            '1: 双句任务，增加一个两个句子拼接的处理')
     args = parser.parse_args()
 
-    if not osp.exists(f"{dir_name}/data"):
+    if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
         df = data_transform()
+
+    # 获取 data 文件夹下第一个文件的后缀
+    data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
+    if not data_files:
+        raise FileNotFoundError(f"data 文件夹下没有文件")
+    file_ext = osp.splitext(data_files[0])[1].lower()
+    train_file = osp.join(f"{dir_name}/data", f"trainset{file_ext}")
+    valid_file = osp.join(f"{dir_name}/data", f"validset{file_ext}")
+    df_valid = None
+    if file_ext == '.json':
+        df = pd.read_json(train_file)
+        if osp.exists(valid_file):
+            df_valid = pd.read_json(valid_file)
+    elif file_ext == '.csv':
+        df = pd.read_csv(train_file)
+        if osp.exists(valid_file):
+            df_valid = pd.read_csv(valid_file)
     else:
-        df = pd.read_csv(f"{dir_name}/data_clean/train_set.csv")
+        raise ValueError(f"不支持的文件格式: {file_ext}，仅支持 .json 或 .csv")
 
     # 仅取 sub_num 条测试代码是否正确
     # df = df.head(args.sub_num)
@@ -181,23 +228,52 @@ if __name__ == '__main__':
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
         print("子数据集样本数：", len(df))
-    sentences = df['text'].tolist()
-    labels = df['label'].tolist()
-    tokenizer = BertTokenizer.from_pretrained('chinese-bert-wwm')
-    encoded_inputs = tokenizer(
-        sentences,
-        padding=True,
-        truncation=True,
-        max_length=512,
-        return_tensors='pt'
-    )
-    train_inputs, val_inputs, train_masks, val_masks, train_labels, val_labels = train_val_data = train_test_split(
-        encoded_inputs['input_ids'],
-        encoded_inputs['attention_mask'],
-        labels,
-        test_size=0.01,
-        random_state=42
-    )
+
+    tokenizer = BertTokenizer.from_pretrained('/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm')
+
+    # 用户没有给出验证集，则从测试集中划分出
+    if df_valid is None:
+        sentences = sentence_process(args, df)
+        labels = df['label'].tolist()
+        encoded_inputs = tokenizer(
+            sentences,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt'
+        )
+        train_inputs, val_inputs, train_masks, val_masks, train_labels, val_labels = train_test_split(
+            encoded_inputs['input_ids'],
+            encoded_inputs['attention_mask'],
+            labels,
+            test_size=0.01,
+            random_state=42
+        )
+    else:
+        sentences = sentence_process(args, df)
+        train_labels = df['label'].tolist()
+        encoded_inputs = tokenizer(
+            sentences,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt'
+        )
+        train_inputs = encoded_inputs['input_ids']
+        train_masks = encoded_inputs['attention_mask']
+
+        sentences_valid = sentence_process(args, df)
+        val_labels = df_valid['label'].tolist()
+        encoded_inputs_valid = tokenizer(
+            sentences_valid,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt'
+        )
+        val_inputs = encoded_inputs_valid['input_ids']
+        val_masks = encoded_inputs_valid['attention_mask']
+
     train_data = {
         'input_ids': train_inputs.clone().detach(),
         'attention_mask': train_masks.clone().detach(),
@@ -214,7 +290,8 @@ if __name__ == '__main__':
     val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
     val_sampler = RandomSampler(val_sample)
     val_dataloader = DataLoader(val_sample, sampler=val_sampler, batch_size=args.batch_size)
-    model = BertForSequenceClassification.from_pretrained("chinese-bert-wwm", num_labels=2).to(device)
+    model = BertForSequenceClassification.from_pretrained(
+        "/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
     if torch.cuda.device_count() > 1:
         print(f"有 {torch.cuda.device_count()} 个GPU")
         model = nn.DataParallel(model)

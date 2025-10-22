@@ -8,3 +8,4 @@ data/*
 chinese-bert-wwm/*
 json_files/*
 .pdm-python
+bert_classifier/

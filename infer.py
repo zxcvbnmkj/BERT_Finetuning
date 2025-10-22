@@ -22,7 +22,7 @@ if __name__ == '__main__':
         './data.xlsx')
     # 数据无列名，只能从列编号取值
     sentences = df.iloc[:, 9].tolist()
-    tokenizer = BertTokenizer.from_pretrained('chinese-bert-wwm')
+    tokenizer = BertTokenizer.from_pretrained('bert_classifier')
     test_data = tokenizer(
         sentences,
         padding=True,
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     prediction_dataset = TensorDataset(test_data['input_ids'], test_data['attention_mask'])
     prediction_dataloader = DataLoader(prediction_dataset, sampler=SequentialSampler(prediction_dataset),
                                        batch_size=batch_size)
-    model = BertForSequenceClassification.from_pretrained(f'{dir_name}/200_bert_classifier')
+    model = BertForSequenceClassification.from_pretrained(f'{dir_name}/bert_classifier')
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
     model.to(device)
