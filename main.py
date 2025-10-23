@@ -40,11 +40,7 @@ def set_logger():
 
 def sentence_process(args, df):
     if args.task == 0:
-<<<<<<< Updated upstream
-        sentences = df['text'].apply(lambda x: str(x)[-512:]).tolist()
-=======
         sentences = df['answer'].apply(lambda x: str(x)[-512:]).tolist()
->>>>>>> Stashed changes
     elif args.task == 1:
         sentences = df.apply(concatenate_and_trim, axis=1).tolist()
     else:
