@@ -40,7 +40,11 @@ def set_logger():
 
 def sentence_process(args, df):
     if args.task == 0:
+<<<<<<< Updated upstream
         sentences = df['text'].apply(lambda x: str(x)[-512:]).tolist()
+=======
+        sentences = df['answer'].apply(lambda x: str(x)[-512:]).tolist()
+>>>>>>> Stashed changes
     elif args.task == 1:
         sentences = df.apply(concatenate_and_trim, axis=1).tolist()
     else:
@@ -85,11 +89,15 @@ def data_transform():
     return train_set
 
 
-def calculate_metrics(preds, labels):
-    preds = np.argmax(preds, axis=1).flatten()
+def calculate_metrics(preds, labels, threshold=0.8):
+    # 默认阈值为 0
+    # preds = np.argmax(preds, axis=1).flatten()
+    # 可以设置阈值，当 1 标签的值大于 0.8 时才认为结束了
+    preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
+    preds = (preds[:, 1] > threshold).astype(int).flatten()
     labels = labels.flatten()
     acc = np.sum(preds == labels) / len(labels)
-    precision = precision_score(labels, preds, average='binary')  # 二分类
+    precision = precision_score(labels, preds, average='binary')
     recall = recall_score(labels, preds, average='binary')
     f1 = f1_score(labels, preds, average='binary')
     return acc, precision, recall, f1
@@ -195,7 +203,7 @@ if __name__ == '__main__':
     parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
     parser.add_argument('--mode', type=int, default=1, help='0: 给出的是`正样本.json`和`负样本.json`二者没有混合，此时需要把它们混合之后再分隔为训练集和测试集；'
                                                             '1: 给出的是训练集、测试集（验证集可选）')
-    parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
+    parser.add_argument('--task', type=int, default=0, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
     args = parser.parse_args()
 
@@ -288,12 +296,13 @@ if __name__ == '__main__':
     train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
     # 使用了 RandomSampler 包裹数据类，使得每一轮都会打乱其中的样本
     # 但是这种写法并没有直接在 DataLoader 里面使用 shuffle 那么简单
+    # sampler 参数和 shuffle 参数是互斥的，只能存在一个
     # train_sampler = RandomSampler(train_sample)
     # train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
-    train_dataloader = DataLoader(train_sample, sampler=train_sample, batch_size=args.batch_size, shuffle=True)
+    train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
     val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
     # val_sampler = RandomSampler(val_sample)
-    val_dataloader = DataLoader(val_sample, sampler=val_sample, batch_size=args.batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
     model = BertForSequenceClassification.from_pretrained(
         "/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
     if torch.cuda.device_count() > 1:
