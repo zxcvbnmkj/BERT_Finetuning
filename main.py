@@ -143,17 +143,17 @@ def finetuning(epochs, max_patient):
         with torch.no_grad():
             for batch in val_dataloader:
                 b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
-            outputs = model(b_input_ids,
-                            attention_mask=b_input_mask)
-            logits = outputs.logits.detach().cpu().numpy()
-            label_ids = b_labels.to('cpu').numpy()
-            acc, p, r, f1 = calculate_metrics(logits, label_ids)
-            total_eval_acc += acc
-            total_eval_p += p
-            total_eval_r += r
-            total_eval_f1 += f1
-            print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
-            logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+                outputs = model(b_input_ids,
+                                attention_mask=b_input_mask)
+                logits = outputs.logits.detach().cpu().numpy()
+                label_ids = b_labels.to('cpu').numpy()
+                acc, p, r, f1 = calculate_metrics(logits, label_ids)
+                total_eval_acc += acc
+                total_eval_p += p
+                total_eval_r += r
+                total_eval_f1 += f1
+                print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+                logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_val_accuracy = total_eval_acc / len(val_dataloader)
         avg_val_p = total_eval_p / len(val_dataloader)
         avg_val_r = total_eval_r / len(val_dataloader)
@@ -284,12 +284,16 @@ if __name__ == '__main__':
         'attention_mask': val_masks.clone().detach(),
         'labels': torch.tensor(val_labels)
     }
+    # 这个类继承自 Dataset ,它只是以元组的形式返回输入的各个参数而已。当数据集逻辑并不复杂的时候，可以直接使用它，从而避免自定义 Dataset
     train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
-    train_sampler = RandomSampler(train_sample)
-    train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
+    # 使用了 RandomSampler 包裹数据类，使得每一轮都会打乱其中的样本
+    # 但是这种写法并没有直接在 DataLoader 里面使用 shuffle 那么简单
+    # train_sampler = RandomSampler(train_sample)
+    # train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
+    train_dataloader = DataLoader(train_sample, sampler=train_sample, batch_size=args.batch_size, shuffle=True)
     val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
-    val_sampler = RandomSampler(val_sample)
-    val_dataloader = DataLoader(val_sample, sampler=val_sampler, batch_size=args.batch_size)
+    # val_sampler = RandomSampler(val_sample)
+    val_dataloader = DataLoader(val_sample, sampler=val_sample, batch_size=args.batch_size, shuffle=True)
     model = BertForSequenceClassification.from_pretrained(
         "/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
     if torch.cuda.device_count() > 1:
