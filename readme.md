@@ -70,3 +70,38 @@ BertForSequenceClassification 的一些权重没有从模型检查点 /Users/now
 你可能需要在下游任务上训练这个模型，才能将其用于预测和推理。
 ```
 因为 BertForSequenceClassification 在 BERT 的基础上新加了一个层，这些层不能从预训练BERT 中获取权重，所以必须微调
+
+## 关于 deepspeed 的配置项
+```
+{
+  "train_batch_size": 128,   # 全局批次大小
+  "gradient_accumulation_steps": 4,  # // 梯度累积步数
+  "optimizer": {
+    "type": "Adam",
+    "params": {
+      "lr": 0.00015,
+      "eps": 1e-8    # 数值稳定性参数
+    }
+  },
+  "scheduler": {
+    "type": "WarmupDecayLR",   // DeepSpeed 自定义的一种学习率调度器，它结合了 热身（Warmup） 和 衰减（Decay） 两个阶段
+    "params": {
+      "warmup_min_lr": 0,    // 热身起始学习率
+      "warmup_max_lr": 1.5e-4,     // 热身结束学习率  
+      "warmup_num_steps": 1000,     // 热身步数
+      "warmup_type": "cosine" // 热身阶段学习率以 consine形式变化
+    }
+  },
+  "fp16": {
+    "enabled": true,   // 启用FP16训练，即混合精度学习
+    "loss_scale": 0,   // 0=动态loss scaling, 其他值=静态loss scaling
+    "loss_scale_window": 1000,    // 动态loss scaling的窗口大小
+  },
+  "zero_optimization": {
+    "stage": 2,
+    "contiguous_gradients": true,
+    "cpu_offload": true    // 是否启用 CPU 卸载
+  },
+  "gradient_clipping": 1.0,     // 梯度裁剪阈值
+}
+```

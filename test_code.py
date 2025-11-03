@@ -1,14 +1,12 @@
 import glob
 from os import path as osp
-import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import classification_report, confusion_matrix
 from torch import nn
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 from transformers import BertTokenizer
-from main import concatenate_and_trim
 from transformers import BertForSequenceClassification
+from utils import eval_classification, concatenate_and_trim_token
 
 dir_name = osp.dirname(__file__)
 
@@ -19,26 +17,12 @@ elif torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
-def eval_classification(y_true: pd.Series, y_pred: pd.Series, title=None):
-    # acc P R F1 support 等指标的报告
-    report = classification_report(y_true, y_pred, output_dict=True)
-    metrics_df = pd.DataFrame(report).transpose()
-    if title:
-        print(f"\nMetrics by Class: ({title})")
-    else:
-        print("\nMetrics by Class:")
-    print(metrics_df)
 
-    # 混淆矩阵
-    cm = confusion_matrix(y_true, y_pred)
-    classes = metrics_df.index.to_numpy()[:-3]
-    cm_df = pd.DataFrame(cm, index=classes, columns=classes)
-    print("Confusion Matrix:")
-    print(cm_df)
 
 if __name__ == '__main__':
-    batch_size = 64
-    test_files = glob.glob(osp.join(f"{dir_name}/data", "testset.*"))
+    batch_size = 16
+    threshold = 0.8
+    test_files = glob.glob(osp.join(f"{dir_name}/data_acc_new", "testset.*"))
     if test_files:
         # 取第一个匹配的文件
         test_file = test_files[0]
@@ -52,8 +36,9 @@ if __name__ == '__main__':
             raise ValueError(f"不支持的文件格式: {file_ext}，仅支持 .json 或 .csv")
     else:
         raise FileNotFoundError(f"data 文件夹下没有 testset 文件")
+    print(f"测试集大小是：{len(df)}")
     # sentences = df['text'].tolist()
-    sentences = df.apply(concatenate_and_trim, axis=1).tolist()
+    sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
     labels = df['label'].tolist()
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/bert_classifier')
     test_data = tokenizer(
@@ -80,10 +65,12 @@ if __name__ == '__main__':
             outputs = model(b_input_ids, attention_mask=b_input_mask)
         logits = outputs.logits.detach().cpu().numpy()
         label_ids = b_labels.cpu().numpy()
-
-        predictions.extend(np.argmax(logits,axis=1))
+        # 阈值只能为 0.5
+        # pred = np.argmax(logits, axis=1)
+        pred = nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+        pred = (pred[:, 1] > threshold).astype(int)
+        predictions.extend(pred)
         true_labels.extend(label_ids)
     # acc, p, r, f1 = calculate_metrics(logits, label_ids)
     # print(f"Text Metrics: {acc:.4f}, {p: 4f}, {r:4f},{f1:4f}")
-    eval_classification(pd.Series(true_labels), pd.Series(predictions))
-
+    eval_classification(pd.Series(true_labels), pd.Series(predictions), "测试集")

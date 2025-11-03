@@ -3,11 +3,11 @@ import argparse
 import glob
 import json
 import logging
-import os
+
 import torch
 import torch.nn as nn
 from sklearn.metrics import precision_score, recall_score, f1_score
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from transformers import BertTokenizer
 from transformers import BertForSequenceClassification
@@ -16,6 +16,8 @@ from tqdm import trange
 import numpy as np
 import pandas as pd
 from os import path as osp
+
+from utils import data_transform
 
 if torch.backends.mps.is_available():
     # 用于 MAC系统
@@ -42,47 +44,13 @@ def sentence_process(args, df):
     if args.task == 0:
         sentences = df['answer'].apply(lambda x: str(x)[-512:]).tolist()
     elif args.task == 1:
-        sentences = df.apply(concatenate_and_trim, axis=1).tolist()
+        sentences = df.apply(concatenate_and_trim_char, axis=1).tolist()
     else:
         raise ValueError(f"不支持的任务类型: {args.task}，支持 0 或 1")
     return sentences
 
 
-# 把 json 形式数据转换为 df
-def data_transform():
-    print("由 json 转换为 csv，数据形式转换中...")
-    data_list = []
-    json_files = glob.glob(osp.join(f"{dir_name}/json_files", "*.json"))
-    for file_path in json_files:
-        filename = os.path.basename(file_path)
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if filename.startswith('n'):
-            label = 0
-            data_part = [{'text': item['text'], 'label': label} for item in data]
-        elif filename.startswith('p'):
-            label = 1
-            data_part = [{'text': item['text'].replace('\n', ' ').replace('\\', '').replace('\'', '').replace('\"', ''),
-                          'label': label} for item in data]
-        data_list.extend(data_part)
-    df = pd.DataFrame(data_list)
-    total_count = len(df)
-    positive_count = len(df[df['label'] == 1])
-    negative_count = len(df[df['label'] == 0])
-    # 数据总数：272068
-    # 正样本数 (label=1)：72068
-    # 负样本数 (label=0)：200000
-    print(f"数据总数：{total_count}")
-    print(f"正样本数 (label=1)：{positive_count}")
-    print(f"负样本数 (label=0)：{negative_count}")
-    test_set_0 = df[df['label'] == 0].sample(n=250, random_state=42)  # 500 条测试集数据，正负样本各 250 条
-    test_set_1 = df[df['label'] == 1].sample(n=250, random_state=42)
-    test_set = pd.concat([test_set_0, test_set_1])
-    train_set = df.drop(test_set.index)
-    os.makedirs(f'{dir_name}/data')
-    test_set.to_csv(f'{dir_name}/data/testset.csv', index=False, encoding='utf-8')
-    train_set.to_csv(f'{dir_name}/data/trainset.csv', index=False, encoding='utf-8', escapechar='\\')
-    return train_set
+
 
 
 def calculate_metrics(preds, labels, threshold=0.8):
@@ -105,13 +73,14 @@ def finetuning(epochs, max_patient):
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
         # ========== 训练阶段 ==========
-        print(f"当前是第{epoch_i}轮")
-        print("训练中")
+        logging.info(f"当前是第{epoch_i}轮")
+        logging.info("==========训练中=================")
         total_train_loss, total_train_acc, total_train_p, total_train_r, total_train_f1 = 0, 0, 0, 0, 0
-        index = 0
-        for batch in train_dataloader:
+        # 这里定义 index + for batch in train_dataloader:，只用于获取批次编号，还有更好的写法，利用 enumerate
+        # index = 0
+        for index, batch in enumerate(train_dataloader):
             print("当前批次是", index)
-            index += 1
+            # index += 1
             b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
             model.zero_grad()
             outputs = model(b_input_ids,
@@ -177,15 +146,16 @@ def finetuning(epochs, max_patient):
                 model.module.save_pretrained(f'{dir_name}/bert_classifier')
             else:
                 model.save_pretrained(f'{dir_name}/bert_classifier')
-            # 保存分词器，并放到模型文件夹内。这样在推理的时候就完全不需要用到预训练模型了，只需要一个微调后模型即可
-            tokenizer.save_pretrained(f'{dir_name}/bert_classifier')
         else:
             patient += 1
         if patient == max_patient:
             break
+    # 放在最后，确保每次运行只保存一次 tokenizer
+    # 保存分词器，并放到模型文件夹内。这样在推理的时候就完全不需要用到预训练模型了，只需要一个微调后模型即可
+    tokenizer.save_pretrained(f'{dir_name}/bert_classifier')
 
-
-def concatenate_and_trim(row):
+# 这个是仅保留最后 512 个 char ，如果使用 tokenizer.truncation_side = "left" 则是保留 512 个 token
+def concatenate_and_trim_char(row):
     combined_text = row['answer'] + '[SEP]' + row['question']
     return combined_text[-512:]
 
@@ -204,7 +174,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
-        df = data_transform()
+        df = data_transform(dir_name)
 
     # 获取 data 文件夹下第一个文件的后缀
     data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
