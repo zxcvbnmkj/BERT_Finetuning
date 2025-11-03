@@ -110,6 +110,7 @@ def finetuning(epochs, max_patient, threshold, print_step):
         if avg_val_f1 > best_f1:
             best_f1 = avg_val_f1
             patient = 0
+            logging.info(f"存储最佳模型在：{dir_name}/{type}_best_{epoch_i}_bert_classifier")
             if hasattr(model, 'module'):
                 model.module.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
             else:
@@ -117,11 +118,12 @@ def finetuning(epochs, max_patient, threshold, print_step):
             tokenizer.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
         else:
             patient += 1
+            logging.info(f"存储非最佳模型在：{dir_name}/{type}_{epoch_i}_bert_classifier")
             if hasattr(model, 'module'):
-                model.module.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
+                model.module.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
             else:
-                model.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
-            tokenizer.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
+                model.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
+            tokenizer.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
         if patient == max_patient:
             break
 
