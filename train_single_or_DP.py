@@ -1,86 +1,40 @@
+"""
+`prohibit_parallel = True`: 在双卡 GPU 上只使用其中 1 张卡训练（默认使用第 2 张）
+调整 0/1 类别上的阈值，其实就是在调整模型预测样本时的偏好，相当于调整的了焦点损失中的权重值
+"""
 # -*- coding: utf-8 -*-
 import argparse
 import glob
-import json
 import logging
-
+import warnings
 import torch
 import torch.nn as nn
-from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from transformers import BertTokenizer
 from transformers import BertForSequenceClassification
 from torch.optim import AdamW
 from tqdm import trange
-import numpy as np
 import pandas as pd
 from os import path as osp
+from utils import eval_classification, set_logger, calculate_metrics, data_transform, sentence_process
 
-from utils import data_transform
+warnings.filterwarnings("ignore")
 
-if torch.backends.mps.is_available():
-    # 用于 MAC系统
-    # mps: Metal Performance Shaders，Apple Silicon（M1/M2/M3 等）的 GPU 加速框架
-    device = torch.device("mps")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 dir_name = osp.dirname(__file__)
 
 
-def set_logger():
-    logging.basicConfig(
-        filename='finetuning.log',
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        encoding='utf-8'
-    )
-
-
-def sentence_process(args, df):
-    if args.task == 0:
-        sentences = df['answer'].apply(lambda x: str(x)[-512:]).tolist()
-    elif args.task == 1:
-        sentences = df.apply(concatenate_and_trim_char, axis=1).tolist()
-    else:
-        raise ValueError(f"不支持的任务类型: {args.task}，支持 0 或 1")
-    return sentences
-
-
-
-
-
-def calculate_metrics(preds, labels, threshold=0.8):
-    # 默认阈值为 0
-    # preds = np.argmax(preds, axis=1).flatten()
-    # 可以设置阈值，当 1 标签的值大于 0.8 时才认为结束了
-    preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
-    preds = (preds[:, 1] > threshold).astype(int).flatten()
-    labels = labels.flatten()
-    acc = np.sum(preds == labels) / len(labels)
-    precision = precision_score(labels, preds, average='binary')
-    recall = recall_score(labels, preds, average='binary')
-    f1 = f1_score(labels, preds, average='binary')
-    return acc, precision, recall, f1
-
-
-def finetuning(epochs, max_patient):
-    set_logger()
+def finetuning(epochs, max_patient, threshold, print_step):
     best_f1 = 0
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
-        # ========== 训练阶段 ==========
         logging.info(f"当前是第{epoch_i}轮")
         logging.info("==========训练中=================")
         total_train_loss, total_train_acc, total_train_p, total_train_r, total_train_f1 = 0, 0, 0, 0, 0
-        # 这里定义 index + for batch in train_dataloader:，只用于获取批次编号，还有更好的写法，利用 enumerate
-        # index = 0
+        train_predictions = []
+        train_true_labels = []
         for index, batch in enumerate(train_dataloader):
-            print("当前批次是", index)
-            # index += 1
             b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
             model.zero_grad()
             outputs = model(b_input_ids,
@@ -92,25 +46,32 @@ def finetuning(epochs, max_patient):
             optimizer.step()
             logits = outputs.logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
-            acc, p, r, f1 = calculate_metrics(logits, label_ids)
+            acc, p, r, f1 = calculate_metrics(logits, label_ids,threshold)
             total_train_acc += acc
             total_train_p += p
             total_train_r += r
             total_train_f1 += f1
             total_train_loss += loss.item()
-            print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
-            logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+            # report 形式的指标
+            train_true_labels.extend(label_ids)
+            pred = nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+            pred = (pred[:, 1] > threshold).astype(int)
+            train_predictions.extend(pred)
+            if index % print_step == 0:
+                logging.info(f"训练集{epoch_i} - 批次 {index} 的指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_train_loss = total_train_loss / len(train_dataloader)
         avg_train_acc = total_train_acc / len(val_dataloader)
         avg_train_p = total_train_p / len(val_dataloader)
         avg_train_r = total_train_r / len(val_dataloader)
         avg_train_f1 = total_train_f1 / len(val_dataloader)
+        eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}")
         logging.info(f"\nEpoch {epoch_i + 1}/{epochs}")
         logging.info(f"Train loss: {avg_train_loss:.4f}")
         logging.info(f"Train Metrics: {avg_train_acc:.4f}, {avg_train_p: 4f}, {avg_train_r:4f},{avg_train_f1:4f}")
 
-        # ========== 验证阶段 ==========
-        print("验证中")
+        logging.info("========== 验证阶段 ==========")
+        val_predictions = []
+        val_true_labels = []
         model.eval()
         total_eval_acc, total_eval_p, total_eval_r, total_eval_f1 = 0, 0, 0, 0
         with torch.no_grad():
@@ -120,69 +81,74 @@ def finetuning(epochs, max_patient):
                                 attention_mask=b_input_mask)
                 logits = outputs.logits.detach().cpu().numpy()
                 label_ids = b_labels.to('cpu').numpy()
-                acc, p, r, f1 = calculate_metrics(logits, label_ids)
+                acc, p, r, f1 = calculate_metrics(logits, label_ids,threshold)
                 total_eval_acc += acc
                 total_eval_p += p
                 total_eval_r += r
                 total_eval_f1 += f1
-                print(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
-                logging.info(f"本批次指标：acc: {acc},p: {p},r: {r},f1: {f1}")
+                # report 形式的指标
+                val_true_labels.extend(label_ids)
+                pred = nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+                pred = (pred[:, 1] > threshold).astype(int)
+                val_predictions.extend(pred)
+                if index % print_step == 0:
+                    logging.info(f"验证集{epoch_i} - 批次 {index} 的指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_val_accuracy = total_eval_acc / len(val_dataloader)
         avg_val_p = total_eval_p / len(val_dataloader)
         avg_val_r = total_eval_r / len(val_dataloader)
         avg_val_f1 = total_eval_f1 / len(val_dataloader)
+        eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"验证集_轮{epoch_i}")
         logging.info(f"Validation Metrics: {avg_val_accuracy:.4f}, {avg_val_p: 4f}, {avg_val_r:4f},{avg_val_f1:4f}")
 
+        for name, param in model.named_parameters():
+            if param is not None:
+                param.data = param.data.contiguous()
         if avg_val_f1 > best_f1:
             best_f1 = avg_val_f1
             patient = 0
-            # 强制确保模型参数的内存布局是连续，用于防止错误 "你在保持一个非连续的张量"
-            # ValueError: You are trying to save a non contiguous tensor: `bert.encoder.layer.0.attention.self.query.weight` which is not allowed. It either means you are trying to save tensors which are reference of each other in which case it's recommended to save only the full tensors, and reslice at load time, or simply call `.contiguous()` on your tensor to pack it before saving.
-            for name, param in model.named_parameters():
-                if param is not None:
-                    param.data = param.data.contiguous()
-            # 如果使用了分布式训练
             if hasattr(model, 'module'):
-                model.module.save_pretrained(f'{dir_name}/bert_classifier')
+                model.module.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
             else:
-                model.save_pretrained(f'{dir_name}/bert_classifier')
+                model.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
+            tokenizer.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
         else:
             patient += 1
+            if hasattr(model, 'module'):
+                model.module.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
+            else:
+                model.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
+            tokenizer.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
         if patient == max_patient:
             break
-    # 放在最后，确保每次运行只保存一次 tokenizer
-    # 保存分词器，并放到模型文件夹内。这样在推理的时候就完全不需要用到预训练模型了，只需要一个微调后模型即可
-    tokenizer.save_pretrained(f'{dir_name}/bert_classifier')
-
-# 这个是仅保留最后 512 个 char ，如果使用 tokenizer.truncation_side = "left" 则是保留 512 个 token
-def concatenate_and_trim_char(row):
-    combined_text = row['answer'] + '[SEP]' + row['question']
-    return combined_text[-512:]
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=7)
-    parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--max_patient', type=int, default=2, help='最大容忍次数')
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--max_patient', type=int, default=3, help='最大容忍次数')
+    parser.add_argument('--threshold', type=float, default=0.5, help='认定为正类（1）的阈值')
+    parser.add_argument('--print_step', type=int, default=150, help='多少批次打印一次批结果')
     parser.add_argument('--if_sub', action='store_true', help='是否使用子数据集训练与验证')
+    parser.add_argument('--prohibit_parallel', action='store_true', help='即使有多张显卡也只用单卡训练')
     parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
     parser.add_argument('--mode', type=int, default=1, help='0: 给出的是`正样本.json`和`负样本.json`二者没有混合，此时需要把它们混合之后再分隔为训练集和测试集；'
                                                             '1: 给出的是训练集、测试集（验证集可选）')
-    parser.add_argument('--task', type=int, default=0, help='0: 单句任务；'
+    parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
     args = parser.parse_args()
+    # 只要在程序启动时调用了，则 logging.info() 全局有效，不必通过形参传递到函数中
+    set_logger()
 
-    if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
-        df = data_transform(dir_name)
+    if args.mode == 0 and not osp.exists(f"{dir_name}/data_acc_new/trainset.csv"):
+        df = data_transform()
 
     # 获取 data 文件夹下第一个文件的后缀
-    data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
+    data_files = glob.glob(osp.join(f"{dir_name}/data_acc_new", "*"))
     if not data_files:
         raise FileNotFoundError(f"data 文件夹下没有文件")
     file_ext = osp.splitext(data_files[0])[1].lower()
-    train_file = osp.join(f"{dir_name}/data", f"trainset{file_ext}")
-    valid_file = osp.join(f"{dir_name}/data", f"validset{file_ext}")
+    train_file = osp.join(f"{dir_name}/data_acc_new", f"trainset{file_ext}")
+    valid_file = osp.join(f"{dir_name}/data_acc_new", f"validset{file_ext}")
     df_valid = None
     if file_ext == '.json':
         df = pd.read_json(train_file)
@@ -201,13 +167,15 @@ if __name__ == '__main__':
         df_0 = df[df['label'] == 0].head(int(args.sub_num / 2.0))
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
-        print("子数据集样本数：", len(df))
+        logging.info("子数据集样本数：" + len(df))
 
-    tokenizer = BertTokenizer.from_pretrained('/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm')
+    logging.info("训练集长度", len(df))
+    tokenizer = BertTokenizer.from_pretrained('/data/bert_check_completed/chinese-bert-wwm')
+    tokenizer.truncation_side = "left"
+    sentences = sentence_process(args, df)
 
-    # 用户没有给出验证集，则从测试集中划分出
+    # 用户没有给出验证集，则从训练集中划分出
     if df_valid is None:
-        sentences = sentence_process(args, df)
         labels = df['label'].tolist()
         encoded_inputs = tokenizer(
             sentences,
@@ -224,7 +192,6 @@ if __name__ == '__main__':
             random_state=42
         )
     else:
-        sentences = sentence_process(args, df)
         train_labels = df['label'].tolist()
         encoded_inputs = tokenizer(
             sentences,
@@ -235,8 +202,10 @@ if __name__ == '__main__':
         )
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
-
-        sentences_valid = sentence_process(args, df)
+        if args.if_sub:
+            df_valid=df_valid.head(10)
+        logging.info("验证集长度" + len(df_valid))
+        sentences_valid = sentence_process(args, df_valid)
         val_labels = df_valid['label'].tolist()
         encoded_inputs_valid = tokenizer(
             sentences_valid,
@@ -260,34 +229,18 @@ if __name__ == '__main__':
     }
     # 这个类继承自 Dataset ,它只是以元组的形式返回输入的各个参数而已。当数据集逻辑并不复杂的时候，可以直接使用它，从而避免自定义 Dataset
     train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
-    # 使用了 RandomSampler 包裹数据类，使得每一轮都会打乱其中的样本
-    # 但是这种写法并没有直接在 DataLoader 里面使用 shuffle 那么简单
-    # sampler 参数和 shuffle 参数是互斥的，只能存在一个
-    # train_sampler = RandomSampler(train_sample)
-    # train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
     train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
     val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
-    # val_sampler = RandomSampler(val_sample)
     val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
     model = BertForSequenceClassification.from_pretrained(
-        "/Users/nowcoder/workspace/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
-    if torch.cuda.device_count() > 1:
-        print(f"有 {torch.cuda.device_count()} 个GPU")
+        # "/data/bert_check_completed/chinese-bert-wwm", num_labels=2).to(device)
+        # 断点续训
+        f"{dir_name}/bert_classifier", num_labels=2).to(device)
+
+    if not args.prohibit_parallel and torch.cuda.device_count() > 1:
+        print(f"有 {torch.cuda.device_count()} 个GPU，使用分布式训练")
         model = nn.DataParallel(model)
 
-    # 为BERT等Transformer模型设置分组参数优化，主要目的是对不同类型的参数应用不同的权重衰减（weight decay）
-    # 获取所有参数
-    param_optimizer = list(model.named_parameters())
-    # 不需要权重衰减的部分
-    no_decay = ['bias', 'LayerNorm.weight']
-    optimizer_grouped_parametes = [
-        # 第一组：需要权重衰减的参数
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
-         'weight_decay_rate': 0.1},
-        # 第二组：不需要衰减的参数。不能省略，因为需要把参数添加到优化器中
-        {"params": [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
-         'weight_decay_rate': 0.0}
-    ]
-    optimizer = AdamW(optimizer_grouped_parametes, lr=1e-5)
+    optimizer = AdamW(model.parameters(), lr=1e-5)
 
-    finetuning(epochs=args.epochs, max_patient=args.max_patient)
+    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold, print_step=args.print_step)

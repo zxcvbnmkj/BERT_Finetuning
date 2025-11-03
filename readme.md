@@ -61,6 +61,20 @@ tokenizer.save_pretrained(f'{dir_name}/bert_classifier')
 ```
 微调后模型本身只会有：`model.safetensors` 和 `config.json` 两个文件
 如果把分词器也保存的话则有：`special_tokens_map.json`、`tokenizer_config.json`、`vocab.txt` 三个文件
+## 关于模型加载器的两种写法
+使用 `RandomSampler` 打乱数据集样本
+```
+train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
+# 使用了 RandomSampler 包裹数据类，使得每一轮都会打乱其中的样本
+# 但是这种写法并没有直接在 DataLoader 里面使用 shuffle 那么简单
+train_sampler = RandomSampler(train_sample)
+train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
+```
+`sampler` 参数和 `shuffle` 参数是互斥的，只能存在一个
+```
+train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
+train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
+```
 ## 关于一个警告
 ```
 Some weights of BertForSequenceClassification were not initialized from the model checkpoint at /Users/nowcoder/workspace/bert_classification/chinese-bert-wwm and are newly initialized: ['classifier.bias', 'classifier.weight']
