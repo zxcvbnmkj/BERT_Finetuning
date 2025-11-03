@@ -1,5 +1,5 @@
 """
-`prohibit_parallel = True`: 在双卡 GPU 上只使用其中 1 张卡训练（默认使用第 2 张）
+`prohibit_parallel = True`: 在双卡 GPU 上只使用其中 1 张卡训练（默认使用第 1 张）
 调整 0/1 类别上的阈值，其实就是在调整模型预测样本时的偏好，相当于调整的了焦点损失中的权重值
 """
 # -*- coding: utf-8 -*-
@@ -22,7 +22,8 @@ from utils import eval_classification, set_logger, calculate_metrics, data_trans
 
 warnings.filterwarnings("ignore")
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+# 不能为 cuda:1 ，分布式训练会出现错误
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 dir_name = osp.dirname(__file__)
 
 
@@ -104,11 +105,11 @@ def finetuning(epochs, max_patient, threshold, print_step):
         for name, param in model.named_parameters():
             if param is not None:
                 param.data = param.data.contiguous()
+        # 用于消融实验
+        type = "dp1_adamw"
         if avg_val_f1 > best_f1:
             best_f1 = avg_val_f1
             patient = 0
-            # 用于消融实验
-            type="dp1_adamw"
             if hasattr(model, 'module'):
                 model.module.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
             else:
