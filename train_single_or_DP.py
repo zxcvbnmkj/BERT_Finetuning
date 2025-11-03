@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from tqdm import trange
 import pandas as pd
 from os import path as osp
+
 from utils import eval_classification, set_logger, calculate_metrics, data_transform, sentence_process
 
 warnings.filterwarnings("ignore")
@@ -46,7 +47,7 @@ def finetuning(epochs, max_patient, threshold, print_step):
             optimizer.step()
             logits = outputs.logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
-            acc, p, r, f1 = calculate_metrics(logits, label_ids,threshold)
+            acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
             total_train_acc += acc
             total_train_p += p
             total_train_r += r
@@ -81,7 +82,7 @@ def finetuning(epochs, max_patient, threshold, print_step):
                                 attention_mask=b_input_mask)
                 logits = outputs.logits.detach().cpu().numpy()
                 label_ids = b_labels.to('cpu').numpy()
-                acc, p, r, f1 = calculate_metrics(logits, label_ids,threshold)
+                acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
                 total_eval_acc += acc
                 total_eval_p += p
                 total_eval_r += r
@@ -121,10 +122,11 @@ def finetuning(epochs, max_patient, threshold, print_step):
         if patient == max_patient:
             break
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=7)
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--max_patient', type=int, default=3, help='最大容忍次数')
     parser.add_argument('--threshold', type=float, default=0.5, help='认定为正类（1）的阈值')
     parser.add_argument('--print_step', type=int, default=150, help='多少批次打印一次批结果')
@@ -139,16 +141,16 @@ if __name__ == '__main__':
     # 只要在程序启动时调用了，则 logging.info() 全局有效，不必通过形参传递到函数中
     set_logger()
 
-    if args.mode == 0 and not osp.exists(f"{dir_name}/data_acc_new/trainset.csv"):
+    if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
         df = data_transform()
 
     # 获取 data 文件夹下第一个文件的后缀
-    data_files = glob.glob(osp.join(f"{dir_name}/data_acc_new", "*"))
+    data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
     if not data_files:
         raise FileNotFoundError(f"data 文件夹下没有文件")
     file_ext = osp.splitext(data_files[0])[1].lower()
-    train_file = osp.join(f"{dir_name}/data_acc_new", f"trainset{file_ext}")
-    valid_file = osp.join(f"{dir_name}/data_acc_new", f"validset{file_ext}")
+    train_file = osp.join(f"{dir_name}/data", f"trainset{file_ext}")
+    valid_file = osp.join(f"{dir_name}/data", f"validset{file_ext}")
     df_valid = None
     if file_ext == '.json':
         df = pd.read_json(train_file)
@@ -203,7 +205,7 @@ if __name__ == '__main__':
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
         if args.if_sub:
-            df_valid=df_valid.head(10)
+            df_valid = df_valid.head(10)
         logging.info("验证集长度" + len(df_valid))
         sentences_valid = sentence_process(args, df_valid)
         val_labels = df_valid['label'].tolist()

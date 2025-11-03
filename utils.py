@@ -13,7 +13,7 @@ from torch import nn
 
 def set_logger():
     logging.basicConfig(
-        filename='finetuning.log',
+        filename='finetuning_dp1_adamw.log',
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         encoding='utf-8'
@@ -57,7 +57,7 @@ def data_transform(dir_name):
     return train_set
 
 
-def calculate_metrics(preds, labels, threshold=0.8):
+def calculate_metrics(preds, labels, threshold=0.5):
     preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
     preds = (preds[:, 1] > threshold).astype(int).flatten()
     labels = labels.flatten()
