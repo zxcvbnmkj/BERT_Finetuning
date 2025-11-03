@@ -107,18 +107,20 @@ def finetuning(epochs, max_patient, threshold, print_step):
         if avg_val_f1 > best_f1:
             best_f1 = avg_val_f1
             patient = 0
+            # 用于消融实验
+            type="dp1_adamw"
             if hasattr(model, 'module'):
-                model.module.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
+                model.module.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
             else:
-                model.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
-            tokenizer.save_pretrained(f'{dir_name}/best_{epoch_i}_bert_classifier')
+                model.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
+            tokenizer.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
         else:
             patient += 1
             if hasattr(model, 'module'):
-                model.module.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
+                model.module.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
             else:
-                model.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
-            tokenizer.save_pretrained(f'{dir_name}/{epoch_i}_bert_classifier')
+                model.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
+            tokenizer.save_pretrained(f'{type}_{dir_name}/{epoch_i}_bert_classifier')
         if patient == max_patient:
             break
 
@@ -169,10 +171,12 @@ if __name__ == '__main__':
         df_0 = df[df['label'] == 0].head(int(args.sub_num / 2.0))
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
-        logging.info("子数据集样本数：" + len(df))
+        logging.info("子数据集样本数：" + str(len(df)))
 
-    logging.info("训练集长度", len(df))
-    tokenizer = BertTokenizer.from_pretrained('/data/bert_check_completed/chinese-bert-wwm')
+    # 日志只能有一个参数
+    # logging.info("训练集长度", len(df))
+    logging.info(f"训练集长度: {len(df)}")
+    tokenizer = BertTokenizer.from_pretrained('/home/ubuntu/bert_classification/chinese-bert-wwm')
     tokenizer.truncation_side = "left"
     sentences = sentence_process(args, df)
 
@@ -206,7 +210,7 @@ if __name__ == '__main__':
         train_masks = encoded_inputs['attention_mask']
         if args.if_sub:
             df_valid = df_valid.head(10)
-        logging.info("验证集长度" + len(df_valid))
+        logging.info("验证集长度" + str(len(df_valid)))
         sentences_valid = sentence_process(args, df_valid)
         val_labels = df_valid['label'].tolist()
         encoded_inputs_valid = tokenizer(
@@ -235,9 +239,9 @@ if __name__ == '__main__':
     val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
     val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
     model = BertForSequenceClassification.from_pretrained(
-        # "/data/bert_check_completed/chinese-bert-wwm", num_labels=2).to(device)
+        "/home/ubuntu/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
         # 断点续训
-        f"{dir_name}/bert_classifier", num_labels=2).to(device)
+        # f"{dir_name}/bert_classifier", num_labels=2).to(device)
 
     if not args.prohibit_parallel and torch.cuda.device_count() > 1:
         print(f"有 {torch.cuda.device_count()} 个GPU，使用分布式训练")
