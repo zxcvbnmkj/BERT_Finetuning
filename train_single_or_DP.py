@@ -62,10 +62,10 @@ def finetuning(epochs, max_patient, threshold, print_step):
             if index % print_step == 0:
                 logging.info(f"训练集{epoch_i} - 批次 {index} 的指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_train_loss = total_train_loss / len(train_dataloader)
-        avg_train_acc = total_train_acc / len(val_dataloader)
-        avg_train_p = total_train_p / len(val_dataloader)
-        avg_train_r = total_train_r / len(val_dataloader)
-        avg_train_f1 = total_train_f1 / len(val_dataloader)
+        avg_train_acc = total_train_acc / len(train_dataloader)
+        avg_train_p = total_train_p / len(train_dataloader)
+        avg_train_r = total_train_r / len(train_dataloader)
+        avg_train_f1 = total_train_f1 / len(train_dataloader)
         eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}")
         logging.info(f"\nEpoch {epoch_i + 1}/{epochs}")
         logging.info(f"Train loss: {avg_train_loss:.4f}")
@@ -99,7 +99,7 @@ def finetuning(epochs, max_patient, threshold, print_step):
         avg_val_p = total_eval_p / len(val_dataloader)
         avg_val_r = total_eval_r / len(val_dataloader)
         avg_val_f1 = total_eval_f1 / len(val_dataloader)
-        eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"验证集_轮{epoch_i}")
+        eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}")
         logging.info(f"Validation Metrics: {avg_val_accuracy:.4f}, {avg_val_p: 4f}, {avg_val_r:4f},{avg_val_f1:4f}")
 
         for name, param in model.named_parameters():

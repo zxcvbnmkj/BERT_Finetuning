@@ -13,7 +13,7 @@ from torch import nn
 
 def set_logger():
     logging.basicConfig(
-        filename='finetuning_dp1_adamw.log',
+        filename='test1.log',
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         encoding='utf-8'
@@ -68,19 +68,16 @@ def calculate_metrics(preds, labels, threshold=0.5):
     return acc, precision, recall, f1
 
 
-def eval_classification(y_true: pd.Series, y_pred: pd.Series, title=None):
+def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
     # acc P R F1 support 等指标的报告
     report = classification_report(y_true, y_pred, output_dict=True)
     metrics_df = pd.DataFrame(report).transpose()
-    if title:
-        logging.info(f"\nMetrics by Class: ({title})")
-    else:
-        logging.info("\nMetrics by Class:")
-    logging.info(metrics_df)
     # 混淆矩阵
     cm = confusion_matrix(y_true, y_pred)
     classes = metrics_df.index.to_numpy()[:-3]
     cm_df = pd.DataFrame(cm, index=classes, columns=classes)
+    logging.info(f"\nMetrics by Class: ({title})")
+    logging.info(metrics_df)
     logging.info("Confusion Matrix:")
     logging.info(cm_df)
 
