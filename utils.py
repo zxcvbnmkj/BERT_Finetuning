@@ -56,20 +56,27 @@ def data_transform(dir_name):
     train_set.to_csv(f'{dir_name}/data/trainset.csv', index=False, encoding='utf-8', escapechar='\\')
     return train_set
 
-
-def calculate_metrics(preds, labels, threshold=0.5):
-    preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
-    preds = (preds[:, 1] > threshold).astype(int).flatten()
-    labels = labels.flatten()
-    acc = np.sum(preds == labels) / len(labels)
-    precision = precision_score(labels, preds, average='binary')
-    recall = recall_score(labels, preds, average='binary')
-    f1 = f1_score(labels, preds, average='binary')
-    return acc, precision, recall, f1
+# 计算 ACC、P、R、F1，可自动指定阈值
+# 可用 eval_classification 代替它
+# def calculate_metrics(preds, labels, threshold=0.5):
+#     preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
+#     preds = (preds[:, 1] > threshold).astype(int).flatten()
+#     labels = labels.flatten()
+#     acc = np.sum(preds == labels) / len(labels)
+#     precision = precision_score(labels, preds, average='binary')
+#     recall = recall_score(labels, preds, average='binary')
+#     f1 = f1_score(labels, preds, average='binary')
+#     return acc, precision, recall, f1
 
 
 def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
     # acc P R F1 support 等指标的报告
+    # accuracy = report['accuracy']
+    # macro_precision = report['macro avg']['precision']
+    # macro_recall = report['macro avg']['recall']
+    # macro_f1 = report['macro avg']['f1-score']
+    # class_0_precision = report['0']['precision']
+    # class_0_recall = report['0']['recall']
     report = classification_report(y_true, y_pred, output_dict=True)
     metrics_df = pd.DataFrame(report).transpose()
     # 混淆矩阵
@@ -80,6 +87,7 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
     print(metrics_df)
     print("Confusion Matrix:")
     print(cm_df)
+    return report
 
 
 def sentence_process(args, df):

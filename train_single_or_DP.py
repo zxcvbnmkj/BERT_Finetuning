@@ -17,8 +17,7 @@ from torch.optim import AdamW
 from tqdm import trange
 import pandas as pd
 from os import path as osp
-
-from utils import eval_classification, set_logger, calculate_metrics, data_transform, sentence_process
+from utils import eval_classification, set_logger, data_transform, sentence_process
 
 warnings.filterwarnings("ignore")
 
@@ -28,12 +27,12 @@ dir_name = osp.dirname(__file__)
 
 
 def finetuning(epochs, max_patient, threshold, print_step):
-    best_f1 = 0
+    best_value = 0
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
         logging.info(f"当前是第{epoch_i}轮")
         logging.info("==========训练中=================")
-        total_train_loss, total_train_acc, total_train_p, total_train_r, total_train_f1 = 0, 0, 0, 0, 0
+        total_train_loss = 0
         train_predictions = []
         train_true_labels = []
         for index, batch in enumerate(train_dataloader):
@@ -48,34 +47,21 @@ def finetuning(epochs, max_patient, threshold, print_step):
             optimizer.step()
             logits = outputs.logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
-            acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
-            total_train_acc += acc
-            total_train_p += p
-            total_train_r += r
-            total_train_f1 += f1
             total_train_loss += loss.item()
             # report 形式的指标
             train_true_labels.extend(label_ids)
             pred = nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
             pred = (pred[:, 1] > threshold).astype(int)
             train_predictions.extend(pred)
-            if index % print_step == 0:
-                logging.info(f"训练集{epoch_i} - 批次 {index} 的指标：acc: {acc},p: {p},r: {r},f1: {f1}")
         avg_train_loss = total_train_loss / len(train_dataloader)
-        avg_train_acc = total_train_acc / len(train_dataloader)
-        avg_train_p = total_train_p / len(train_dataloader)
-        avg_train_r = total_train_r / len(train_dataloader)
-        avg_train_f1 = total_train_f1 / len(train_dataloader)
         eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}")
         logging.info(f"\nEpoch {epoch_i + 1}/{epochs}")
         logging.info(f"Train loss: {avg_train_loss:.4f}")
-        logging.info(f"Train Metrics: {avg_train_acc:.4f}, {avg_train_p: 4f}, {avg_train_r:4f},{avg_train_f1:4f}")
 
         logging.info("========== 验证阶段 ==========")
         val_predictions = []
         val_true_labels = []
         model.eval()
-        total_eval_acc, total_eval_p, total_eval_r, total_eval_f1 = 0, 0, 0, 0
         with torch.no_grad():
             for batch in val_dataloader:
                 b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
@@ -83,32 +69,22 @@ def finetuning(epochs, max_patient, threshold, print_step):
                                 attention_mask=b_input_mask)
                 logits = outputs.logits.detach().cpu().numpy()
                 label_ids = b_labels.to('cpu').numpy()
-                acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
-                total_eval_acc += acc
-                total_eval_p += p
-                total_eval_r += r
-                total_eval_f1 += f1
                 # report 形式的指标
                 val_true_labels.extend(label_ids)
                 pred = nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
                 pred = (pred[:, 1] > threshold).astype(int)
                 val_predictions.extend(pred)
-                if index % print_step == 0:
-                    logging.info(f"验证集{epoch_i} - 批次 {index} 的指标：acc: {acc},p: {p},r: {r},f1: {f1}")
-        avg_val_accuracy = total_eval_acc / len(val_dataloader)
-        avg_val_p = total_eval_p / len(val_dataloader)
-        avg_val_r = total_eval_r / len(val_dataloader)
-        avg_val_f1 = total_eval_f1 / len(val_dataloader)
-        eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}")
-        logging.info(f"Validation Metrics: {avg_val_accuracy:.4f}, {avg_val_p: 4f}, {avg_val_r:4f},{avg_val_f1:4f}")
+        report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}")
 
         for name, param in model.named_parameters():
             if param is not None:
                 param.data = param.data.contiguous()
         # 用于消融实验
         type = "dp1_adamw"
-        if avg_val_f1 > best_f1:
-            best_f1 = avg_val_f1
+        # if report['macro avg']['f1-score'] > best_f1:
+        #     best_f1 = report['macro avg']['f1-score']
+        if (report['0']['recall'] + report['1']['precision'])/2.0 > best_value:
+            best_value = report['macro avg']['f1-score']
             patient = 0
             logging.info(f"存储最佳模型在：{dir_name}/{type}_best_{epoch_i}_bert_classifier")
             if hasattr(model, 'module'):
