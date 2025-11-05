@@ -13,7 +13,7 @@ from torch import nn
 
 def set_logger():
     logging.basicConfig(
-        filename='test1.log',
+        filename='11-05.log',
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         encoding='utf-8'
@@ -76,10 +76,10 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
     cm = confusion_matrix(y_true, y_pred)
     classes = metrics_df.index.to_numpy()[:-3]
     cm_df = pd.DataFrame(cm, index=classes, columns=classes)
-    logging.info(f"\nMetrics by Class: ({title})")
-    logging.info(metrics_df)
-    logging.info("Confusion Matrix:")
-    logging.info(cm_df)
+    print(f"\nMetrics by Class: ({title})")
+    print(metrics_df)
+    print("Confusion Matrix:")
+    print(cm_df)
 
 
 def sentence_process(args, df):
@@ -93,9 +93,7 @@ def sentence_process(args, df):
 
 
 def concatenate_and_trim_token(row):
-    answer = str(row['answer'])
-    question = str(row['question'])
-    combined_text = answer + '[SEP]' + question
+    combined_text = str(row['answer']) + '[SEP]' + str(row['question'])
     if len(combined_text) > 1200:
         return combined_text[-1200:]
     else:

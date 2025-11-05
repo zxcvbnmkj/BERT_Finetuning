@@ -1,5 +1,4 @@
 import glob
-import logging
 from os import path as osp
 import pandas as pd
 import torch
@@ -21,7 +20,6 @@ else:
 
 
 if __name__ == '__main__':
-    set_logger()
     batch_size = 64
     threshold = 0.5
     test_files = glob.glob(osp.join(f"{dir_name}/data", "testset.*"))
@@ -57,6 +55,7 @@ if __name__ == '__main__':
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
     model.to(device)
+    total_acc, total_p, total_r, total_f1 = 0, 0, 0, 0
     predictions = []
     true_labels = []
     model.eval()
@@ -71,6 +70,14 @@ if __name__ == '__main__':
         pred = (pred[:, 1] > threshold).astype(int)
         predictions.extend(pred)
         true_labels.extend(label_ids)
-    acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
-    logging.info(f"Test Metrics: {acc:.4f}, {p: 4f}, {r:4f},{f1:4f}")
+        acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
+        total_acc += acc
+        total_p += p
+        total_r += r
+        total_f1 += f1
+    avg_acc = total_acc / len(prediction_dataloader)
+    avg_p = total_p / len(prediction_dataloader)
+    avg_r = total_r / len(prediction_dataloader)
+    avg_f1 = total_f1 / len(prediction_dataloader)
+    print(f"Test Metrics: {avg_acc:.4f}, {avg_p: 4f}, {avg_r:4f},{avg_f1:4f}")
     eval_classification(pd.Series(true_labels), pd.Series(predictions), "测试集")
