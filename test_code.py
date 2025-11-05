@@ -71,6 +71,6 @@ if __name__ == '__main__':
         pred = (pred[:, 1] > threshold).astype(int)
         predictions.extend(pred)
         true_labels.extend(label_ids)
-    acc, p, r, f1 = calculate_metrics(logits, label_ids)
+    acc, p, r, f1 = calculate_metrics(logits, label_ids, threshold)
     logging.info(f"Test Metrics: {acc:.4f}, {p: 4f}, {r:4f},{f1:4f}")
     eval_classification(pd.Series(true_labels), pd.Series(predictions), "测试集")
