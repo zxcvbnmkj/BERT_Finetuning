@@ -152,9 +152,15 @@ if __name__ == '__main__':
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
         logging.info("子数据集样本数：" + str(len(df)))
-
+    # 使得序列 1 限制长度
+    df['question'] = df['question'].apply(
+        lambda x: str(x)[-200:]
+    )
+    if df_valid is not None:
+        df_valid['question'] = df_valid['question'].apply(
+            lambda x: str(x)[-200:]
+        )
     # 日志只能有一个参数
-    # logging.info("训练集长度", len(df))
     logging.info(f"训练集长度: {len(df)}")
     tokenizer = BertTokenizer.from_pretrained('/home/ubuntu/bert_classification/chinese-bert-wwm')
     tokenizer.truncation_side = "left"

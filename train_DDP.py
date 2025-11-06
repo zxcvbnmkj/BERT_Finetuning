@@ -229,7 +229,14 @@ if __name__ == '__main__':
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
         print("子数据集样本数：", len(df))
-
+    # 使得序列 1 限制长度
+    df['question'] = df['question'].apply(
+        lambda x: str(x)[-200:]
+    )
+    if df_valid is not None:
+        df_valid['question'] = df_valid['question'].apply(
+            lambda x: str(x)[-200:]
+        )
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/chinese-bert-wwm')
     # 如果句子过长，仅保留 512 个 token，被截断的一侧是：左边的，即保留文本后半段
     tokenizer.truncation_side = "left"
