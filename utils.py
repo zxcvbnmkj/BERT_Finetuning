@@ -84,11 +84,10 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无", use_l
         logging.info(metrics_df)
         logging.info("Confusion Matrix:")
         logging.info(cm_df)
-    else:
-        print(f"\nMetrics by Class: ({title})")
-        print(metrics_df)
-        print("Confusion Matrix:")
-        print(cm_df)
+    print(f"\nMetrics by Class: ({title})")
+    print(metrics_df)
+    print("Confusion Matrix:")
+    print(cm_df)
     return report
 
 # 不必手动拼接

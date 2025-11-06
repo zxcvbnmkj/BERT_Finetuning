@@ -1,3 +1,6 @@
+"""
+测试是否可正常执行：torchrun --nproc_per_node=2 train_DDP.py --if_sub --sub_num 40
+"""
 # -*- coding: utf-8 -*-
 import argparse
 import glob
@@ -86,7 +89,8 @@ def finetuning(epochs, max_patient, threshold):
             eval_classification(pd.Series(all_true_labels_global), pd.Series(all_predictions_global), f"训练集_轮{epoch_i}",
                                 use_log=True)
         else:
-            eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}",
+            if world_size > 2:
+                eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}",
                                 use_log=True)
 
         if is_main_process:
@@ -121,19 +125,19 @@ def finetuning(epochs, max_patient, threshold):
                 # 遍历所有GPU收集的数据，合并成全局列表
                 val_all_true_labels_global.extend(val_gathered_true_labels[i].cpu().numpy())
                 val_all_predictions_global.extend(val_gathered_predictions[i].cpu().numpy())
-            eval_classification(pd.Series(val_all_true_labels_global), pd.Series(val_all_predictions_global),
+            report = eval_classification(pd.Series(val_all_true_labels_global), pd.Series(val_all_predictions_global),
                                 f"验证集_轮{epoch_i}", use_log=True)
         else:
-            report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}",
+            if world_size > 2:
+                report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}",
                                          use_log=True)
-        epoch_value = (report['0']['recall'] + report['1']['precision']) / 2.0
-        # 强制确保模型参数的内存布局是连续，用于防止错误 "你在保持一个非连续的张量"
-        # ValueError: You are trying to save a non contiguous tensor: `bert.encoder.layer.0.attention.self.query.weight` which is not allowed. It either means you are trying to save tensors which are reference of each other in which case it's recommended to save only the full tensors, and reslice at load time, or simply call `.contiguous()` on your tensor to pack it before saving.
-        for name, param in model.named_parameters():
-            if param is not None:
-                param.data = param.data.contiguous()
-        if epoch_value > best_value:
-            if is_main_process:
+        if is_main_process:
+            type = "DDP"
+            epoch_value = (report['0']['recall'] + report['1']['precision']) / 2.0
+            for name, param in model.named_parameters():
+                if param is not None:
+                    param.data = param.data.contiguous()
+            if epoch_value > best_value:
                 logging.info(f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}")
                 best_value = epoch_value
                 patient = 0
@@ -143,14 +147,18 @@ def finetuning(epochs, max_patient, threshold):
                 else:
                     model.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
                 tokenizer.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
-        else:
-            patient += 1
-            if is_main_process:
+            else:
+                patient += 1
                 if hasattr(model, 'module'):
-                    model.module.save_pretrained(f'{type}_{epoch_i}_{dir_name}/bert_classifier')
+                    model.module.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
                 else:
                     model.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
                 tokenizer.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
+        # 同步patient给所有进程
+        if world_size > 1:
+            patient_tensor = torch.tensor(patient, device=device)
+            dist.all_reduce(patient_tensor)
+            patient = patient_tensor.item()  # 所有进程得到相同的patient值
         if patient == max_patient:
             break
 
@@ -185,10 +193,10 @@ if __name__ == '__main__':
         assert args.batch_size % torch.cuda.device_count() == 0
         args.batch_size = args.batch_size // torch.cuda.device_count()
         logging.info(f"每个 GPU 上执行的批次数是：{args.batch_size}")
-        # 将进程号和GPU号对应起来
-        torch.cuda.set_device(local_rank)
         # nccl 是 NVIDIA的集合通信库，专为GPU间通信优化
         dist.init_process_group(backend="nccl")
+        # 将进程号和GPU号对应起来
+        torch.cuda.set_device(local_rank)
         # 方便用于后面的 .to(device)
         device = torch.device('cuda:{}'.format(local_rank))
 
@@ -227,15 +235,15 @@ if __name__ == '__main__':
     tokenizer.truncation_side = "left"
     if args.task == 1:
         encoded_inputs = tokenizer(
-            df['question'],
-            df['answer'],
+            df['question'].tolist(),
+            df['answer'].tolist(),
             padding=True,
             truncation='only_second',
             max_length=512,
             return_tensors='pt')
     elif args.task == 0:
         encoded_inputs = tokenizer(
-            df['answer'],
+            df['answer'].tolist(),
             padding=True,
             truncation=True,
             max_length=512,
@@ -256,13 +264,13 @@ if __name__ == '__main__':
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
         if args.if_sub:
-            df_valid = df_valid.head(10)
-        logging.info("验证集长度" + str(len(df_valid)))
+            df_valid = df_valid.sample(n=20, random_state=42)
+        logging.info("验证集长度：" + str(len(df_valid)))
         val_labels = df_valid['label'].tolist()
         if args.task == 1:
             encoded_inputs_valid = tokenizer(
-                df_valid['question'],
-                df_valid['answer'],
+                df_valid['question'].tolist(),
+                df_valid['answer'].tolist(),
                 padding=True,
                 truncation='only_second',
                 max_length=512,
@@ -270,7 +278,7 @@ if __name__ == '__main__':
             )
         elif args.task == 0:
             encoded_inputs_valid = tokenizer(
-                df_valid['answer'],
+                df_valid['answer'].tolist(),
                 padding=True,
                 truncation=True,
                 max_length=512,
@@ -298,7 +306,7 @@ if __name__ == '__main__':
         train_sampler = DistributedSampler(train_sample, shuffle=True)
         train_dataloader = DataLoader(train_sample, sampler=train_sampler, batch_size=args.batch_size)
         val_sampler = DistributedSampler(val_sample, shuffle=True)
-        val_dataloader = DataLoader(val_sample, sampler=train_sampler, batch_size=args.batch_size)
+        val_dataloader = DataLoader(val_sample, sampler=val_sampler, batch_size=args.batch_size)
     else:
         train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
         val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
@@ -306,7 +314,8 @@ if __name__ == '__main__':
         f'{dir_name}/chinese-bert-wwm', num_labels=2, classifier_dropout=0.5).to(device)
 
     if torch.cuda.device_count() > 1:
-        print(f"有 {torch.cuda.device_count()} 个GPU，使用 DDP")
+        if is_main_process:
+            print(f"有 {torch.cuda.device_count()} 个GPU，使用 DDP")
         # model = nn.DataParallel(model)
         model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 
