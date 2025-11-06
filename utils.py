@@ -1,19 +1,15 @@
 import json
 import os
-import numpy as np
 import pandas as pd
-import torch
 from sklearn.metrics import classification_report, confusion_matrix
 import logging
 import glob
 from os import path as osp
-from sklearn.metrics import precision_score, recall_score, f1_score
-from torch import nn
 
 
-def set_logger():
+def set_logger(log_file):
     logging.basicConfig(
-        filename='11-05.log',
+        filename=log_file,
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         encoding='utf-8'
@@ -69,7 +65,7 @@ def data_transform(dir_name):
 #     return acc, precision, recall, f1
 
 
-def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
+def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无", use_log=False):
     # acc P R F1 support 等指标的报告
     # accuracy = report['accuracy']
     # macro_precision = report['macro avg']['precision']
@@ -83,26 +79,32 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无"):
     cm = confusion_matrix(y_true, y_pred)
     classes = metrics_df.index.to_numpy()[:-3]
     cm_df = pd.DataFrame(cm, index=classes, columns=classes)
-    print(f"\nMetrics by Class: ({title})")
-    print(metrics_df)
-    print("Confusion Matrix:")
-    print(cm_df)
+    if use_log:
+        logging.info(f"\nMetrics by Class: ({title})")
+        logging.info(metrics_df)
+        logging.info("Confusion Matrix:")
+        logging.info(cm_df)
+    else:
+        print(f"\nMetrics by Class: ({title})")
+        print(metrics_df)
+        print("Confusion Matrix:")
+        print(cm_df)
     return report
 
-
-def sentence_process(args, df):
-    if args.task == 0:
-        sentences = df['answer'].apply(lambda x: str(x)[-1200:]).tolist()
-    elif args.task == 1:
-        sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
-    else:
-        raise ValueError(f"不支持的任务类型: {args.task}，支持 0 或 1")
-    return sentences
-
-
-def concatenate_and_trim_token(row):
-    combined_text = str(row['answer']) + '[SEP]' + str(row['question'])
-    if len(combined_text) > 1200:
-        return combined_text[-1200:]
-    else:
-        return combined_text
+# 不必手动拼接
+# def sentence_process(args, df):
+#     if args.task == 0:
+#         sentences = df['answer'].apply(lambda x: str(x)[-1200:]).tolist()
+#     elif args.task == 1:
+#         sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
+#     else:
+#         raise ValueError(f"不支持的任务类型: {args.task}，支持 0 或 1")
+#     return sentences
+#
+#
+# def concatenate_and_trim_token(row):
+#     combined_text = str(row['answer']) + '[SEP]' + str(row['question'])
+#     if len(combined_text) > 1200:
+#         return combined_text[-1200:]
+#     else:
+#         return combined_text

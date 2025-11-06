@@ -1,3 +1,6 @@
+"""
+前往注意要根据任务修改截断方向：tokenizer.truncation_side = "left"
+"""
 import glob
 from os import path as osp
 import pandas as pd
@@ -6,7 +9,7 @@ from torch import nn
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 from transformers import BertTokenizer
 from transformers import BertForSequenceClassification
-from utils import eval_classification, concatenate_and_trim_token, calculate_metrics, set_logger
+from utils import eval_classification
 
 dir_name = osp.dirname(__file__)
 
@@ -38,13 +41,15 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"data 文件夹下没有 testset 文件")
     print(f"测试集大小是：{len(df)}")
     # sentences = df['text'].tolist()
-    sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
+    # sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
     labels = df['label'].tolist()
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/dp1_adamw_best_2_bert_classifier')
+    tokenizer.truncation_side = "left"
     test_data = tokenizer(
-        sentences,
+        df['question'],
+        df['answer'],
         padding=True,
-        truncation=True,
+        truncation='only_second',
         max_length=512,
         return_tensors='pt'
     )

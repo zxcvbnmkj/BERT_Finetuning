@@ -17,7 +17,7 @@ from torch.optim import AdamW
 from tqdm import trange
 import pandas as pd
 from os import path as osp
-from utils import eval_classification, set_logger, data_transform, sentence_process
+from utils import eval_classification, set_logger, data_transform
 
 warnings.filterwarnings("ignore")
 
@@ -83,8 +83,9 @@ def finetuning(epochs, max_patient, threshold, print_step):
         type = "dp1_adamw"
         # if report['macro avg']['f1-score'] > best_f1:
         #     best_f1 = report['macro avg']['f1-score']
-        if (report['0']['recall'] + report['1']['precision'])/2.0 > best_value:
-            best_value = report['macro avg']['f1-score']
+        epoch_value=(report['0']['recall'] + report['1']['precision']) / 2.0
+        if epoch_value > best_value:
+            best_value = epoch_value
             patient = 0
             logging.info(f"存储最佳模型在：{dir_name}/{type}_best_{epoch_i}_bert_classifier")
             if hasattr(model, 'module'):
@@ -110,7 +111,6 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--max_patient', type=int, default=3, help='最大容忍次数')
     parser.add_argument('--threshold', type=float, default=0.5, help='认定为正类（1）的阈值')
-    parser.add_argument('--print_step', type=int, default=150, help='多少批次打印一次批结果')
     parser.add_argument('--if_sub', action='store_true', help='是否使用子数据集训练与验证')
     parser.add_argument('--prohibit_parallel', action='store_true', help='即使有多张显卡也只用单卡训练')
     parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
@@ -118,9 +118,10 @@ if __name__ == '__main__':
                                                             '1: 给出的是训练集、测试集（验证集可选）')
     parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
+    parser.add_argument('--log_file', type=str, default='bert_finetuning.log', help='日志文件名字')
     args = parser.parse_args()
     # 只要在程序启动时调用了，则 logging.info() 全局有效，不必通过形参传递到函数中
-    set_logger()
+    set_logger(args.log_file)
 
     if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
         df = data_transform()
@@ -157,18 +158,26 @@ if __name__ == '__main__':
     logging.info(f"训练集长度: {len(df)}")
     tokenizer = BertTokenizer.from_pretrained('/home/ubuntu/bert_classification/chinese-bert-wwm')
     tokenizer.truncation_side = "left"
-    sentences = sentence_process(args, df)
-
-    # 用户没有给出验证集，则从训练集中划分出
-    if df_valid is None:
-        labels = df['label'].tolist()
+    # sentences = sentence_process(args, df)
+    if args.task == 1:
         encoded_inputs = tokenizer(
-            sentences,
+            df['question'],
+            df['answer'],
+            padding=True,
+            truncation='only_second',
+            max_length=512,
+            return_tensors='pt')
+    elif args.task == 0:
+        encoded_inputs = tokenizer(
+            df['answer'],
             padding=True,
             truncation=True,
             max_length=512,
             return_tensors='pt'
         )
+    # 用户没有给出验证集，则从训练集中划分出
+    if df_valid is None:
+        labels = df['label'].tolist()
         train_inputs, val_inputs, train_masks, val_masks, train_labels, val_labels = train_test_split(
             encoded_inputs['input_ids'],
             encoded_inputs['attention_mask'],
@@ -178,27 +187,30 @@ if __name__ == '__main__':
         )
     else:
         train_labels = df['label'].tolist()
-        encoded_inputs = tokenizer(
-            sentences,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors='pt'
-        )
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
         if args.if_sub:
             df_valid = df_valid.head(10)
         logging.info("验证集长度" + str(len(df_valid)))
-        sentences_valid = sentence_process(args, df_valid)
+        # sentences_valid = sentence_process(args, df_valid)
         val_labels = df_valid['label'].tolist()
-        encoded_inputs_valid = tokenizer(
-            sentences_valid,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors='pt'
-        )
+        if args.task == 1:
+            encoded_inputs_valid = tokenizer(
+                df_valid['question'],
+                df_valid['answer'],
+                padding=True,
+                truncation='only_second',
+                max_length=512,
+                return_tensors='pt'
+            )
+        elif args.task == 0:
+            encoded_inputs_valid = tokenizer(
+                df_valid['answer'],
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors='pt'
+            )
         val_inputs = encoded_inputs_valid['input_ids']
         val_masks = encoded_inputs_valid['attention_mask']
 
@@ -219,8 +231,8 @@ if __name__ == '__main__':
     val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
     model = BertForSequenceClassification.from_pretrained(
         "/home/ubuntu/bert_classification/chinese-bert-wwm", num_labels=2).to(device)
-        # 断点续训
-        # f"{dir_name}/bert_classifier", num_labels=2).to(device)
+    # 断点续训
+    # f"{dir_name}/bert_classifier", num_labels=2).to(device)
 
     if not args.prohibit_parallel and torch.cuda.device_count() > 1:
         print(f"有 {torch.cuda.device_count()} 个GPU，使用分布式训练")
