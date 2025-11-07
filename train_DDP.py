@@ -138,7 +138,7 @@ def finetuning(epochs, max_patient, threshold):
                 if param is not None:
                     param.data = param.data.contiguous()
             if epoch_value > best_value:
-                logging.info(f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}")
+                logging.info(f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_best_{epoch_i}_bert_classifier")
                 best_value = epoch_value
                 patient = 0
                 # 如果使用了分布式训练
@@ -149,6 +149,7 @@ def finetuning(epochs, max_patient, threshold):
                 tokenizer.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
             else:
                 patient += 1
+                logging.info(f"存储当前非最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_{epoch_i}_bert_classifier")
                 if hasattr(model, 'module'):
                     model.module.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
                 else:
@@ -162,9 +163,10 @@ def finetuning(epochs, max_patient, threshold):
         if patient == max_patient:
             break
 
-            # 清理分布式资源
+    # 清理分布式资源
     if world_size > 1:
         dist.destroy_process_group()
+    logging.info("程序运行完毕，正常退出！")
 
 
 if __name__ == '__main__':

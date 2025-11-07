@@ -42,12 +42,15 @@ if __name__ == '__main__':
     print(f"测试集大小是：{len(df)}")
     # sentences = df['text'].tolist()
     # sentences = df.apply(concatenate_and_trim_token, axis=1).tolist()
+    df['question'] = df['question'].apply(
+        lambda x: str(x)[-200:]
+    )
     labels = df['label'].tolist()
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/dp1_adamw_best_2_bert_classifier')
     tokenizer.truncation_side = "left"
     test_data = tokenizer(
-        df['question'],
-        df['answer'],
+        df['question'].tolist(),
+        df['answer'].tolist(),
         padding=True,
         truncation='only_second',
         max_length=512,
