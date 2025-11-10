@@ -16,9 +16,8 @@ def set_logger(log_file):
     )
 
 
-# 把 json 形式数据转换为 df
 def data_transform(dir_name):
-    print("由 json 转换为 csv，数据形式转换中...")
+    print("数据预处理中...")
     data_list = []
     json_files = glob.glob(osp.join(f"{dir_name}/json_files", "*.json"))
     for file_path in json_files:
@@ -48,8 +47,8 @@ def data_transform(dir_name):
     test_set = pd.concat([test_set_0, test_set_1])
     train_set = df.drop(test_set.index)
     os.makedirs(f'{dir_name}/data')
-    test_set.to_csv(f'{dir_name}/data/testset.csv', index=False, encoding='utf-8')
-    train_set.to_csv(f'{dir_name}/data/trainset.csv', index=False, encoding='utf-8', escapechar='\\')
+    test_set.to_json(f'{dir_name}/data/testset.json', orient='records', force_ascii=False)
+    train_set.to_json(f'{dir_name}/data/trainset.json', orient='records', force_ascii=False)
     return train_set
 
 # 计算 ACC、P、R、F1，可自动指定阈值
