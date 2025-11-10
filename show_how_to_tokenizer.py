@@ -11,7 +11,8 @@ answer = "好的，我将针对以上问题进行回答。我想说的是，在�
 
 test_data = tokenizer(question, answer, max_length=512,
                       truncation='only_second')  # 只截断第二个句子
-print(test_data)
+print(test_data['input_ids'])
+print(test_data['token_type_ids'])
 print(len(test_data['input_ids']))
 
 # 将 input_ids 转换回 tokens，方便查看分词结果

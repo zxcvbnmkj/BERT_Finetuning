@@ -21,7 +21,9 @@ import pandas as pd
 from os import path as osp
 from torch import distributed as dist
 
-from utils import eval_classification, set_logger, data_transform
+from loss import focal_loss
+from model import BertCustomClassification
+from utils import eval_classification, set_logger, data_transform, tokenizering
 
 warnings.filterwarnings("ignore")
 
@@ -36,7 +38,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dir_name = osp.dirname(__file__)
 
 
-def finetuning(epochs, max_patient, threshold):
+def finetuning(epochs, max_patient, threshold,model_type):
     best_value = 0
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
@@ -48,12 +50,16 @@ def finetuning(epochs, max_patient, threshold):
             logging.info("================训练中==================")
         total_train_loss, train_true_labels, train_predictions, val_true_labels, val_predictions = 0, [], [], [], []
         for index, batch in enumerate(train_dataloader):
-            b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
+            b_input_ids, b_input_mask, b_type, b_labels = tuple(t.to(device) for t in batch)
             model.zero_grad()
-            outputs = model(b_input_ids,
+            outputs = model(input_ids=b_input_ids,
                             attention_mask=b_input_mask,
+                            token_type_ids=b_type,
                             labels=b_labels)
-            loss = outputs.loss
+            if model_type == 'official':
+                loss = outputs.loss
+            elif model_type == 'custom':
+                loss = loss_func(outputs, labels)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -91,16 +97,17 @@ def finetuning(epochs, max_patient, threshold):
         else:
             if world_size > 2:
                 eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}",
-                                use_log=True)
+                                    use_log=True)
 
         if is_main_process:
             logging.info("==============验证中===============")
         model.eval()
         with torch.no_grad():
             for batch in val_dataloader:
-                b_input_ids, b_input_mask, b_labels = tuple(t.to(device) for t in batch)
-                outputs = model(b_input_ids,
-                                attention_mask=b_input_mask)
+                b_input_ids, b_input_mask, b_type, b_labels = tuple(t.to(device) for t in batch)
+                outputs = model(input_ids=b_input_ids,
+                                attention_mask=b_input_mask,
+                                token_type_ids=b_type)
                 logits = outputs.logits.detach().cpu().numpy()
                 label_ids = b_labels.to('cpu').numpy()
                 # report 形式的指标
@@ -126,11 +133,11 @@ def finetuning(epochs, max_patient, threshold):
                 val_all_true_labels_global.extend(val_gathered_true_labels[i].cpu().numpy())
                 val_all_predictions_global.extend(val_gathered_predictions[i].cpu().numpy())
             report = eval_classification(pd.Series(val_all_true_labels_global), pd.Series(val_all_predictions_global),
-                                f"验证集_轮{epoch_i}", use_log=True)
+                                         f"验证集_轮{epoch_i}", use_log=True)
         else:
             if world_size > 2:
                 report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}",
-                                         use_log=True)
+                                             use_log=True)
         if is_main_process:
             type = "DDP"
             epoch_value = (report['0']['recall'] + report['1']['precision']) / 2.0
@@ -138,7 +145,8 @@ def finetuning(epochs, max_patient, threshold):
                 if param is not None:
                     param.data = param.data.contiguous()
             if epoch_value > best_value:
-                logging.info(f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_best_{epoch_i}_bert_classifier")
+                logging.info(
+                    f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_best_{epoch_i}_bert_classifier")
                 best_value = epoch_value
                 patient = 0
                 # 如果使用了分布式训练
@@ -149,7 +157,8 @@ def finetuning(epochs, max_patient, threshold):
                 tokenizer.save_pretrained(f'{dir_name}/{type}_best_{epoch_i}_bert_classifier')
             else:
                 patient += 1
-                logging.info(f"存储当前非最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_{epoch_i}_bert_classifier")
+                logging.info(
+                    f"存储当前非最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_{epoch_i}_bert_classifier")
                 if hasattr(model, 'module'):
                     model.module.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
                 else:
@@ -182,6 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
     parser.add_argument('--log_file', type=str, default='bert_finetuning.log', help='日志文件名字')
+    parser.add_argument('--model', type=str, default='custom', help='模型形式：custom（自定义结构）、official（Transform库提供的官方结构）')
     args = parser.parse_args()
     set_logger(args.log_file)
 
@@ -242,28 +252,14 @@ if __name__ == '__main__':
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/chinese-bert-wwm')
     # 如果句子过长，仅保留 512 个 token，被截断的一侧是：左边的，即保留文本后半段
     tokenizer.truncation_side = "left"
-    if args.task == 1:
-        encoded_inputs = tokenizer(
-            df['question'].tolist(),
-            df['answer'].tolist(),
-            padding=True,
-            truncation='only_second',
-            max_length=512,
-            return_tensors='pt')
-    elif args.task == 0:
-        encoded_inputs = tokenizer(
-            df['answer'].tolist(),
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors='pt'
-        )
+    encoded_inputs = tokenizering(args.task, tokenizer, df)
     # 用户没有给出验证集，则从测试集中划分出
     if df_valid is None:
         labels = df['label'].tolist()
-        train_inputs, val_inputs, train_masks, val_masks, train_labels, val_labels = train_test_split(
+        train_inputs, val_inputs, train_masks, val_masks, train_type, val_type, train_labels, val_labels = train_test_split(
             encoded_inputs['input_ids'],
             encoded_inputs['attention_mask'],
+            encoded_inputs['token_type_ids'],
             labels,
             test_size=0.01,
             random_state=42
@@ -272,42 +268,16 @@ if __name__ == '__main__':
         train_labels = df['label'].tolist()
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
+        train_type = encoded_inputs['token_type_ids']
         if args.if_sub:
             df_valid = df_valid.sample(n=20, random_state=42)
         logging.info("验证集长度：" + str(len(df_valid)))
         val_labels = df_valid['label'].tolist()
-        if args.task == 1:
-            encoded_inputs_valid = tokenizer(
-                df_valid['question'].tolist(),
-                df_valid['answer'].tolist(),
-                padding=True,
-                truncation='only_second',
-                max_length=512,
-                return_tensors='pt'
-            )
-        elif args.task == 0:
-            encoded_inputs_valid = tokenizer(
-                df_valid['answer'].tolist(),
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors='pt'
-            )
-        val_inputs = encoded_inputs_valid['input_ids']
-        val_masks = encoded_inputs_valid['attention_mask']
+        encoded_inputs_valid = tokenizering(args.task, tokenizer, df_valid)
 
-    train_data = {
-        'input_ids': train_inputs.clone().detach(),
-        'attention_mask': train_masks.clone().detach(),
-        'labels': torch.tensor(train_labels)
-    }
-    val_data = {
-        'input_ids': val_inputs.clone().detach(),
-        'attention_mask': val_masks.clone().detach(),
-        'labels': torch.tensor(val_labels)
-    }
-    train_sample = TensorDataset(train_data['input_ids'], train_data['attention_mask'], train_data['labels'])
-    val_sample = TensorDataset(val_data['input_ids'], val_data['attention_mask'], val_data['labels'])
+    train_sample = TensorDataset(train_inputs, train_masks, train_type, torch.tensor(train_labels))
+    val_sample = TensorDataset(encoded_inputs_valid['input_ids'], encoded_inputs_valid['attention_mask'],
+                               encoded_inputs_valid['token_type_ids'], torch.tensor(val_labels))
     if world_size > 1:
         # shuffle=True 不能写在 DataLoader 中，应该放在 DistributedSampler 中。
         # DistributedSampler 非常重要，它负责把全局批次（如64）随机拆分成 N 份，并保证 **每一份（每一个GPU）上面的样本不重复不缺少**
@@ -319,8 +289,13 @@ if __name__ == '__main__':
     else:
         train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
         val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
-    model = BertForSequenceClassification.from_pretrained(
-        f'{dir_name}/chinese-bert-wwm', num_labels=2, classifier_dropout=0.5).to(device)
+    if args.model == 'official':
+        model = BertForSequenceClassification.from_pretrained(
+            f'{dir_name}/chinese-bert-wwm', num_labels=2, classifier_dropout=0.5).to(device)
+    elif args.model == 'custom':
+        model = BertCustomClassification(
+            '/System/Volumes/Data/data/models/check_completion_v2/20250731170901/chinese-bert-wwm')
+        loss_func = focal_loss(alpha=0.1)
 
     if torch.cuda.device_count() > 1:
         if is_main_process:
@@ -330,4 +305,4 @@ if __name__ == '__main__':
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
 
-    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold)
+    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold,model_type=args.model)

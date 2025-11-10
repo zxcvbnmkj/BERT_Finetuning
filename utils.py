@@ -106,3 +106,22 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无", use_l
 #         return combined_text[-1200:]
 #     else:
 #         return combined_text
+
+def tokenizering(task, tokenizer, df):
+    if task == 1:
+        encoded_inputs = tokenizer(
+            df['question'].tolist(),
+            df['answer'].tolist(),
+            padding=True,
+            truncation='only_second',
+            max_length=512,
+            return_tensors='pt')
+    elif task == 0:
+        encoded_inputs = tokenizer(
+            df['answer'].tolist(),
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt'
+        )
+    return encoded_inputs
