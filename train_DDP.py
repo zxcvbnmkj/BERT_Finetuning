@@ -1,5 +1,5 @@
 """
-测试是否可正常执行：torchrun --nproc_per_node=2 train_DDP.py --if_sub --sub_num 40
+测试是否可正常执行：torchrun --nproc_per_node=2 train_DDP.py --sub_num 40
 """
 # -*- coding: utf-8 -*-
 import argparse
@@ -23,7 +23,7 @@ from torch import distributed as dist
 
 from loss import focal_loss
 from model import BertCustomClassification
-from utils import eval_classification, set_logger, data_transform, tokenizering
+from utils import eval_classification, set_logger, data_transform, tokenizering, load_files
 
 warnings.filterwarnings("ignore")
 
@@ -38,7 +38,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dir_name = osp.dirname(__file__)
 
 
-def finetuning(epochs, max_patient, threshold,model_type):
+def finetuning(epochs, max_patient, threshold, model_type, type):
     best_value = 0
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
@@ -58,12 +58,13 @@ def finetuning(epochs, max_patient, threshold,model_type):
                             labels=b_labels)
             if model_type == 'official':
                 loss = outputs.loss
+                logits = outputs.logits.detach().cpu().numpy()
             elif model_type == 'custom':
-                loss = loss_func(outputs, labels)
+                loss = loss_func(outputs, torch.tensor(b_labels))
+                logits = outputs.detach().cpu().numpy()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            logits = outputs.logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
             total_train_loss += loss.item()
             # report 形式的指标
@@ -77,27 +78,28 @@ def finetuning(epochs, max_patient, threshold,model_type):
             # 将列表转换为张量
             true_labels_tensor = torch.tensor(train_true_labels, device=device)
             predictions_tensor = torch.tensor(train_predictions, device=device)
-            # 收集所有进程的数据到主进程，"循环 world_size 次"
+            # 创建指定形状的值为 0 的张量，形状是 单卡 tensor 形状 * 卡数
             gathered_true_labels = [torch.zeros_like(true_labels_tensor) for _ in range(world_size)]
             gathered_predictions = [torch.zeros_like(predictions_tensor) for _ in range(world_size)]
+            # 收集所有进程的数据到主进程，
             # 使得每个GPU的 gathered_true_labels 列表都会包含所有GPU的数据
             dist.all_gather(gathered_true_labels, true_labels_tensor)
             dist.all_gather(gathered_predictions, predictions_tensor)
-        if is_main_process:
-            all_true_labels_global = []
-            all_predictions_global = []
-            for i in range(world_size):
-                # 遍历所有GPU收集的数据，合并成全局列表
-                all_true_labels_global.extend(gathered_true_labels[i].cpu().numpy())
-                all_predictions_global.extend(gathered_predictions[i].cpu().numpy())
-            logging.info(f"\nEpoch {epoch_i + 1}/{epochs}")
-            logging.info(f"Train loss: {avg_train_loss:.4f}")
-            eval_classification(pd.Series(all_true_labels_global), pd.Series(all_predictions_global), f"训练集_轮{epoch_i}",
-                                use_log=True)
-        else:
-            if world_size > 2:
-                eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}",
+            if is_main_process:
+                all_true_labels_global = []
+                all_predictions_global = []
+                for i in range(world_size):
+                    # 遍历所有GPU收集的数据，合并成全局列表。gathered_true_labels[i] 是第 i 个卡指标数据
+                    all_true_labels_global.extend(gathered_true_labels[i].cpu().numpy())
+                    all_predictions_global.extend(gathered_predictions[i].cpu().numpy())
+                logging.info(f"\nEpoch {epoch_i + 1}/{epochs}")
+                logging.info(f"Train loss: {avg_train_loss:.4f}")
+                eval_classification(pd.Series(all_true_labels_global), pd.Series(all_predictions_global),
+                                    f"训练集_轮{epoch_i}",
                                     use_log=True)
+        else:
+            eval_classification(pd.Series(train_true_labels), pd.Series(train_predictions), f"训练集_轮{epoch_i}",
+                                use_log=True)
 
         if is_main_process:
             logging.info("==============验证中===============")
@@ -108,7 +110,12 @@ def finetuning(epochs, max_patient, threshold,model_type):
                 outputs = model(input_ids=b_input_ids,
                                 attention_mask=b_input_mask,
                                 token_type_ids=b_type)
-                logits = outputs.logits.detach().cpu().numpy()
+                if model_type == 'official':
+                    loss = outputs.loss
+                    logits = outputs.logits.detach().cpu().numpy()
+                elif model_type == 'custom':
+                    loss = loss_func(outputs, torch.tensor(b_labels))
+                    logits = outputs.detach().cpu().numpy()
                 label_ids = b_labels.to('cpu').numpy()
                 # report 形式的指标
                 val_true_labels.extend(label_ids)
@@ -125,28 +132,28 @@ def finetuning(epochs, max_patient, threshold,model_type):
             # 使得每个GPU的 gathered_true_labels 列表都会包含所有GPU的数据
             dist.all_gather(val_gathered_true_labels, val_true_labels_tensor)
             dist.all_gather(val_gathered_predictions, val_predictions_tensor)
-        if is_main_process:
-            val_all_true_labels_global = []
-            val_all_predictions_global = []
-            for i in range(world_size):
-                # 遍历所有GPU收集的数据，合并成全局列表
-                val_all_true_labels_global.extend(val_gathered_true_labels[i].cpu().numpy())
-                val_all_predictions_global.extend(val_gathered_predictions[i].cpu().numpy())
-            report = eval_classification(pd.Series(val_all_true_labels_global), pd.Series(val_all_predictions_global),
-                                         f"验证集_轮{epoch_i}", use_log=True)
+            if is_main_process:
+                val_all_true_labels_global = []
+                val_all_predictions_global = []
+                for i in range(world_size):
+                    # 遍历所有GPU收集的数据，合并成全局列表
+                    val_all_true_labels_global.extend(val_gathered_true_labels[i].cpu().numpy())
+                    val_all_predictions_global.extend(val_gathered_predictions[i].cpu().numpy())
+                report = eval_classification(pd.Series(val_all_true_labels_global),
+                                             pd.Series(val_all_predictions_global),
+                                             f"验证集_轮{epoch_i}", use_log=True)
         else:
-            if world_size > 2:
-                report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}",
-                                             use_log=True)
+            report = eval_classification(pd.Series(val_true_labels), pd.Series(val_predictions), f"验证集_轮{epoch_i}",
+                                         use_log=True)
         if is_main_process:
-            type = "DDP"
-            epoch_value = (report['0']['recall'] + report['1']['precision']) / 2.0
+            # epoch_value = (report['0']['recall'] + report['1']['precision']) / 2.0
+            epoch_value = report['1']['f1-score']
             for name, param in model.named_parameters():
                 if param is not None:
                     param.data = param.data.contiguous()
             if epoch_value > best_value:
                 logging.info(
-                    f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_best_{epoch_i}_bert_classifier")
+                    f"存储当前最佳模型，属于轮{epoch_i}，它的指标为{epoch_value}，模型存储在{dir_name}/{type}_best_{epoch_i}_bert_classifier")
                 best_value = epoch_value
                 patient = 0
                 # 如果使用了分布式训练
@@ -158,7 +165,7 @@ def finetuning(epochs, max_patient, threshold,model_type):
             else:
                 patient += 1
                 logging.info(
-                    f"存储当前非最佳模型，属于轮{epoch_i}，它的指标为{report['0']['recall']},{report['1']['precision']}，模型存储在{dir_name}/{type}_{epoch_i}_bert_classifier")
+                    f"存储当前非最佳模型，属于轮{epoch_i}，它的指标为{epoch_value}，模型存储在{dir_name}/{type}_{epoch_i}_bert_classifier")
                 if hasattr(model, 'module'):
                     model.module.save_pretrained(f'{dir_name}/{type}_{epoch_i}_bert_classifier')
                 else:
@@ -180,20 +187,19 @@ def finetuning(epochs, max_patient, threshold,model_type):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=8)
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--train_file', type=str, default='./data/trainset.json')
+    parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--batch_size', type=int, default=80)
-    parser.add_argument('--max_patient', type=int, default=1, help='最大容忍次数')
+    parser.add_argument('--max_patient', type=int, default=3, help='最大容忍次数')
     parser.add_argument('--threshold', type=float, default=0.5, help='认定为正类（1）的阈值')
-    parser.add_argument('--if_sub', action='store_true', help='是否使用子数据集训练与验证')
-    parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
-    parser.add_argument('--mode', type=int, default=1, help='0: 给出的是`正样本.json`和`负样本.json`二者没有混合，此时需要把它们混合之后再分隔为训练集和测试集；'
-                                                            '1: 给出的是训练集、测试集（验证集可选）')
-    parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
+    parser.add_argument('--sub_num', type=int, default=0, help='如果不为 0 表示使用子数据集训练与验证，将从原数据集中截取 sub_num 条数据')
+    parser.add_argument('--task', type=int, default=0, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
-    parser.add_argument('--log_file', type=str, default='bert_finetuning.log', help='日志文件名字')
+    parser.add_argument('--log_name', type=str, default='anwser_only', help='日志文件名字')
     parser.add_argument('--model', type=str, default='custom', help='模型形式：custom（自定义结构）、official（Transform库提供的官方结构）')
     args = parser.parse_args()
-    set_logger(args.log_file)
+    set_logger(args.log_name)
 
     # 2，不同进程设置不同的随机种子
     # 设置 torch 与 numpy 的随机种子
@@ -212,46 +218,18 @@ if __name__ == '__main__':
         # 方便用于后面的 .to(device)
         device = torch.device('cuda:{}'.format(local_rank))
 
-    if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
-        df = data_transform()
-
-    # 获取 data 文件夹下第一个文件的后缀
-    data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
-    if not data_files:
-        raise FileNotFoundError(f"data 文件夹下没有文件")
-    file_ext = osp.splitext(data_files[0])[1].lower()
-    train_file = osp.join(f"{dir_name}/data", f"trainset{file_ext}")
-    valid_file = osp.join(f"{dir_name}/data", f"validset{file_ext}")
-    df_valid = None
-    if file_ext == '.json':
-        df = pd.read_json(train_file)
-        if osp.exists(valid_file):
-            df_valid = pd.read_json(valid_file)
-    elif file_ext == '.csv':
-        df = pd.read_csv(train_file)
-        if osp.exists(valid_file):
-            df_valid = pd.read_csv(valid_file)
-    else:
-        raise ValueError(f"不支持的文件格式: {file_ext}，仅支持 .json 或 .csv")
+    df, df_valid = load_files(args.train_file, args.valid_file)
 
     # 仅取 sub_num 条测试代码是否正确
     # df = df.head(args.sub_num)
-    if args.if_sub:
+    if args.sub_num != 0:
         df_0 = df[df['label'] == 0].head(int(args.sub_num / 2.0))
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
         print("子数据集样本数：", len(df))
-    # 使得序列 1 限制长度
-    df['question'] = df['question'].apply(
-        lambda x: str(x)[-200:]
-    )
-    if df_valid is not None:
-        df_valid['question'] = df_valid['question'].apply(
-            lambda x: str(x)[-200:]
-        )
     tokenizer = BertTokenizer.from_pretrained(f'{dir_name}/chinese-bert-wwm')
     # 如果句子过长，仅保留 512 个 token，被截断的一侧是：左边的，即保留文本后半段
-    tokenizer.truncation_side = "left"
+    # tokenizer.truncation_side = "left"
     encoded_inputs = tokenizering(args.task, tokenizer, df)
     # 用户没有给出验证集，则从测试集中划分出
     if df_valid is None:
@@ -261,23 +239,26 @@ if __name__ == '__main__':
             encoded_inputs['attention_mask'],
             encoded_inputs['token_type_ids'],
             labels,
-            test_size=0.01,
+            test_size=0.1,
             random_state=42
         )
+        train_sample = TensorDataset(train_inputs, train_masks, train_type, torch.tensor(train_labels))
+        val_sample = TensorDataset(val_inputs, val_masks, val_type, torch.tensor(val_labels))
     else:
         train_labels = df['label'].tolist()
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
         train_type = encoded_inputs['token_type_ids']
-        if args.if_sub:
+        if args.sub_num != 0:
             df_valid = df_valid.sample(n=20, random_state=42)
         logging.info("验证集长度：" + str(len(df_valid)))
         val_labels = df_valid['label'].tolist()
         encoded_inputs_valid = tokenizering(args.task, tokenizer, df_valid)
+        train_sample = TensorDataset(encoded_inputs['input_ids'], encoded_inputs['attention_mask'],
+                                     encoded_inputs['token_type_ids'], torch.tensor(train_labels))
+        val_sample = TensorDataset(encoded_inputs_valid['input_ids'], encoded_inputs_valid['attention_mask'],
+                                   encoded_inputs_valid['token_type_ids'], torch.tensor(val_labels))
 
-    train_sample = TensorDataset(train_inputs, train_masks, train_type, torch.tensor(train_labels))
-    val_sample = TensorDataset(encoded_inputs_valid['input_ids'], encoded_inputs_valid['attention_mask'],
-                               encoded_inputs_valid['token_type_ids'], torch.tensor(val_labels))
     if world_size > 1:
         # shuffle=True 不能写在 DataLoader 中，应该放在 DistributedSampler 中。
         # DistributedSampler 非常重要，它负责把全局批次（如64）随机拆分成 N 份，并保证 **每一份（每一个GPU）上面的样本不重复不缺少**
@@ -289,20 +270,22 @@ if __name__ == '__main__':
     else:
         train_dataloader = DataLoader(train_sample, batch_size=args.batch_size, shuffle=True)
         val_dataloader = DataLoader(val_sample, batch_size=args.batch_size, shuffle=True)
+
     if args.model == 'official':
         model = BertForSequenceClassification.from_pretrained(
             f'{dir_name}/chinese-bert-wwm', num_labels=2, classifier_dropout=0.5).to(device)
     elif args.model == 'custom':
         model = BertCustomClassification(
-            '/System/Volumes/Data/data/models/check_completion_v2/20250731170901/chinese-bert-wwm')
+            f'{dir_name}/chinese-bert-wwm').to(device)
         loss_func = focal_loss(alpha=0.1)
 
     if torch.cuda.device_count() > 1:
         if is_main_process:
             print(f"有 {torch.cuda.device_count()} 个GPU，使用 DDP")
-        # model = nn.DataParallel(model)
-        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank,
+                                        find_unused_parameters=True)
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
 
-    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold,model_type=args.model)
+    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold, model_type=args.model,
+               type=args.log_name)

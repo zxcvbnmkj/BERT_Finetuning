@@ -1,8 +1,8 @@
 from transformers import AutoModel, BertForSequenceClassification
 
-# origin_model = AutoModel.from_pretrained(
-#     '/System/Volumes/Data/data/models/check_completion_v2/20250731170901/chinese-bert-wwm')
-# print(origin_model)
+origin_model = AutoModel.from_pretrained(
+    '/System/Volumes/Data/data/models/check_completion_v2/20250731170901/chinese-bert-wwm')
+print(origin_model)
 """
 BertModel(
   (embeddings): BertEmbeddings(

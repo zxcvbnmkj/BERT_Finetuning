@@ -9,9 +9,9 @@ class BertCustomClassification(nn.Module):
         self.dropout_pair = nn.Dropout(0.5)
         self.dense = nn.Linear(768, 2)
 
-    def forward(self, token_package):
-        output = self.bert(input_ids=token_package['input_ids'], token_type_ids=token_package['token_type_ids'],
-                           attention_mask=token_package['attention_mask'])
+    def forward(self, input_ids, attention_mask, token_type_ids):
+        output = self.bert(input_ids=input_ids, token_type_ids=token_type_ids,
+                           attention_mask=attention_mask)
         #  output 其实是一个类，它比较特殊，既是对象又是类字典结构。可以采用类、字典两种方式来访问它
         # <class 'transformers.modeling_outputs.BaseModelOutputWithPoolingAndCrossAttentions'>
         # print(type(output))
@@ -37,4 +37,4 @@ if __name__ == '__main__':
 
     bc = BertCustomClassification(
         '/System/Volumes/Data/data/models/check_completion_v2/20250731170901/chinese-bert-wwm')
-    preds = bc(test_data)
+    preds = bc(test_data['input_ids'], test_data['attention_mask'], test_data['token_type_ids'])

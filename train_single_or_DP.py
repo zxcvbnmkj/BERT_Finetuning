@@ -17,7 +17,7 @@ from torch.optim import AdamW
 from tqdm import trange
 import pandas as pd
 from os import path as osp
-from utils import eval_classification, set_logger, data_transform
+from utils import eval_classification, set_logger, data_transform, load_files
 
 warnings.filterwarnings("ignore")
 
@@ -26,7 +26,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 dir_name = osp.dirname(__file__)
 
 
-def finetuning(epochs, max_patient, threshold, print_step):
+def finetuning(epochs, max_patient, threshold, type):
     best_value = 0
     patient = 0
     for epoch_i in trange(epochs, desc="Epoch"):
@@ -79,8 +79,6 @@ def finetuning(epochs, max_patient, threshold, print_step):
         for name, param in model.named_parameters():
             if param is not None:
                 param.data = param.data.contiguous()
-        # 用于消融实验
-        type = "dp1_adamw"
         # if report['macro avg']['f1-score'] > best_f1:
         #     best_f1 = report['macro avg']['f1-score']
         epoch_value=(report['0']['recall'] + report['1']['precision']) / 2.0
@@ -109,45 +107,24 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=7)
     parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--train_file', type=str, default='./data/trainset.json')
+    parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--max_patient', type=int, default=3, help='最大容忍次数')
     parser.add_argument('--threshold', type=float, default=0.5, help='认定为正类（1）的阈值')
-    parser.add_argument('--if_sub', action='store_true', help='是否使用子数据集训练与验证')
     parser.add_argument('--prohibit_parallel', action='store_true', help='即使有多张显卡也只用单卡训练')
     parser.add_argument('--sub_num', type=int, default=10, help='从原数据集中截取 sub_num 条数据')
-    parser.add_argument('--mode', type=int, default=1, help='0: 给出的是`正样本.json`和`负样本.json`二者没有混合，此时需要把它们混合之后再分隔为训练集和测试集；'
-                                                            '1: 给出的是训练集、测试集（验证集可选）')
     parser.add_argument('--task', type=int, default=1, help='0: 单句任务；'
                                                             '1: 双句任务，增加一个两个句子拼接的处理')
-    parser.add_argument('--log_file', type=str, default='bert_finetuning.log', help='日志文件名字')
+    parser.add_argument('--log_name', type=str, default='bert_finetuning', help='日志文件名字')
     args = parser.parse_args()
     # 只要在程序启动时调用了，则 logging.info() 全局有效，不必通过形参传递到函数中
-    set_logger(args.log_file)
+    set_logger(args.log_name)
 
-    if args.mode == 0 and not osp.exists(f"{dir_name}/data/trainset.csv"):
-        df = data_transform()
-
-    # 获取 data 文件夹下第一个文件的后缀
-    data_files = glob.glob(osp.join(f"{dir_name}/data", "*"))
-    if not data_files:
-        raise FileNotFoundError(f"data 文件夹下没有文件")
-    file_ext = osp.splitext(data_files[0])[1].lower()
-    train_file = osp.join(f"{dir_name}/data", f"trainset{file_ext}")
-    valid_file = osp.join(f"{dir_name}/data", f"validset{file_ext}")
-    df_valid = None
-    if file_ext == '.json':
-        df = pd.read_json(train_file)
-        if osp.exists(valid_file):
-            df_valid = pd.read_json(valid_file)
-    elif file_ext == '.csv':
-        df = pd.read_csv(train_file)
-        if osp.exists(valid_file):
-            df_valid = pd.read_csv(valid_file)
-    else:
-        raise ValueError(f"不支持的文件格式: {file_ext}，仅支持 .json 或 .csv")
+    df, df_valid = load_files(args.train_file, args.valid_file)
 
     # 仅取 sub_num 条测试代码是否正确
     # df = df.head(args.sub_num)
-    if args.if_sub:
+    if args.sub_num != 0:
         df_0 = df[df['label'] == 0].head(int(args.sub_num / 2.0))
         df_1 = df[df['label'] == 1].head(int(args.sub_num / 2.0))
         df = pd.concat([df_0, df_1]).sample(frac=1).reset_index(drop=True)
@@ -195,10 +172,9 @@ if __name__ == '__main__':
         train_labels = df['label'].tolist()
         train_inputs = encoded_inputs['input_ids']
         train_masks = encoded_inputs['attention_mask']
-        if args.if_sub:
+        if args.sub_num != 0:
             df_valid = df_valid.head(10)
         logging.info("验证集长度" + str(len(df_valid)))
-        # sentences_valid = sentence_process(args, df_valid)
         val_labels = df_valid['label'].tolist()
         if args.task == 1:
             encoded_inputs_valid = tokenizer(
@@ -246,4 +222,4 @@ if __name__ == '__main__':
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
 
-    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold, print_step=args.print_step)
+    finetuning(epochs=args.epochs, max_patient=args.max_patient, threshold=args.threshold, type = args.log_name)

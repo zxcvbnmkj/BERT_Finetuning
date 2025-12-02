@@ -1,67 +1,35 @@
-import json
 import os
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 import logging
-import glob
-from os import path as osp
 
-
-def set_logger(log_file):
+def set_logger(log_name):
     logging.basicConfig(
-        filename=log_file,
+        filename=f"{log_name}.log",
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         encoding='utf-8'
     )
 
-
-def data_transform(dir_name):
-    print("数据预处理中...")
-    data_list = []
-    json_files = glob.glob(osp.join(f"{dir_name}/json_files", "*.json"))
-    for file_path in json_files:
-        filename = os.path.basename(file_path)
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if filename.startswith('n'):
-            label = 0
-            data_part = [{'text': item['text'], 'label': label} for item in data]
-        elif filename.startswith('p'):
-            label = 1
-            data_part = [{'text': item['text'].replace('\n', ' ').replace('\\', '').replace('\'', '').replace('\"', ''),
-                          'label': label} for item in data]
-        data_list.extend(data_part)
-    df = pd.DataFrame(data_list)
-    total_count = len(df)
-    positive_count = len(df[df['label'] == 1])
-    negative_count = len(df[df['label'] == 0])
-    # 数据总数：272068
-    # 正样本数 (label=1)：72068
-    # 负样本数 (label=0)：200000
-    print(f"数据总数：{total_count}")
-    print(f"正样本数 (label=1)：{positive_count}")
-    print(f"负样本数 (label=0)：{negative_count}")
-    test_set_0 = df[df['label'] == 0].sample(n=250, random_state=42)  # 500 条测试集数据，正负样本各 250 条
-    test_set_1 = df[df['label'] == 1].sample(n=250, random_state=42)
-    test_set = pd.concat([test_set_0, test_set_1])
-    train_set = df.drop(test_set.index)
-    os.makedirs(f'{dir_name}/data')
-    test_set.to_json(f'{dir_name}/data/testset.json', orient='records', force_ascii=False)
-    train_set.to_json(f'{dir_name}/data/trainset.json', orient='records', force_ascii=False)
-    return train_set
-
-# 计算 ACC、P、R、F1，可自动指定阈值
-# 可用 eval_classification 代替它
-# def calculate_metrics(preds, labels, threshold=0.5):
-#     preds = nn.functional.softmax(torch.tensor(preds), dim=-1).numpy()
-#     preds = (preds[:, 1] > threshold).astype(int).flatten()
-#     labels = labels.flatten()
-#     acc = np.sum(preds == labels) / len(labels)
-#     precision = precision_score(labels, preds, average='binary')
-#     recall = recall_score(labels, preds, average='binary')
-#     f1 = f1_score(labels, preds, average='binary')
-#     return acc, precision, recall, f1
+def load_files(train_file, valid_file):
+    df_valid = None
+    _, ext = os.path.splitext(train_file)
+    ext = ext.lower()
+    if ext == '.json':
+        df_train = pd.read_json(train_file)
+        if valid_file is not None:
+            df_valid = pd.read_json(valid_file)
+    elif ext == '.csv':
+        df_train = pd.read_csv(train_file)
+        if valid_file is not None:
+            df_valid = pd.read_csv(valid_file)
+    elif ext == '.xlsx':
+        df_train = pd.read_excel(train_file)
+        if valid_file is not None:
+            df_valid = pd.read_excel(valid_file)
+    else:
+        raise ValueError(f'当前使用的文件后缀 {ext} 不被支持，仅支持 josn、csv、excel')
+    return df_train, df_valid
 
 
 def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无", use_log=False):
@@ -109,6 +77,9 @@ def eval_classification(y_true: pd.Series, y_pred: pd.Series, title="无", use_l
 
 def tokenizering(task, tokenizer, df):
     if task == 1:
+        df['question'] = df['question'].apply(
+            lambda x: str(x)[-200:]
+        )
         encoded_inputs = tokenizer(
             df['question'].tolist(),
             df['answer'].tolist(),
