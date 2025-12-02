@@ -85,7 +85,29 @@ BertForSequenceClassification 的一些权重没有从模型检查点 /Users/now
 你可能需要在下游任务上训练这个模型，才能将其用于预测和推理。
 ```
 因为 BertForSequenceClassification 在 BERT 的基础上新加了一个层，这些层不能从预训练BERT 中获取权重，所以必须微调
-
+## DDP 中的指标聚合到主进程中
+- 原先的写法，使用的 `dist.all_gather` 让每个 GPU 都同步了其他 GPU 的值
+```python
+def gather_metrics(train_true_labels, train_predictions):
+    # 将列表转换为张量
+    true_labels_tensor = torch.tensor(train_true_labels, device=device)
+    predictions_tensor = torch.tensor(train_predictions, device=device)
+    # 创建指定形状的值为 0 的张量，形状是 单卡 tensor 形状 * 卡数
+    gathered_true_labels = [torch.zeros_like(true_labels_tensor) for _ in range(world_size)]
+    gathered_predictions = [torch.zeros_like(predictions_tensor) for _ in range(world_size)]
+    # 使得每个GPU的 gathered_true_labels 列表都会包含所有GPU的数据
+    dist.all_gather(gathered_true_labels, true_labels_tensor)
+    dist.all_gather(gathered_predictions, predictions_tensor)
+    if is_main_process:
+        all_true_labels_global = []
+        all_predictions_global = []
+        for i in range(world_size):
+            # 遍历所有GPU收集的数据，合并成全局列表。gathered_true_labels[i] 是第 i 个卡指标数据
+            all_true_labels_global.extend(gathered_true_labels[i].cpu().numpy())
+            all_predictions_global.extend(gathered_predictions[i].cpu().numpy())
+    return all_true_labels_global, all_predictions_global
+```
+- 目前改为使用 `dist.gather`
 ## 关于 deepspeed 的配置项
 ```
 {

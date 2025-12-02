@@ -4,7 +4,6 @@
 """
 # -*- coding: utf-8 -*-
 import argparse
-import glob
 import logging
 import warnings
 import torch
@@ -17,7 +16,7 @@ from torch.optim import AdamW
 from tqdm import trange
 import pandas as pd
 from os import path as osp
-from utils import eval_classification, set_logger, data_transform, load_files
+from utils import eval_classification, set_logger, load_files
 
 warnings.filterwarnings("ignore")
 
